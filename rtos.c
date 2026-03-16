@@ -1,0 +1,117 @@
+// RTOS Framework
+// Andrew Espinoza
+
+//-----------------------------------------------------------------------------
+// Hardware Target
+//-----------------------------------------------------------------------------
+
+// Target Platform: EK-TM4C123GXL Evaluation Board
+// Target uC:       TM4C123GH6PM
+// System Clock:    40 MHz
+
+//-----------------------------------------------------------------------------
+// Device includes, defines, and assembler directives
+//-----------------------------------------------------------------------------
+
+#include "tm4c123gh6pm.h"
+#include "clock.h"
+#include "gpio.h"
+#include "uart0.h"
+#include "wait.h"
+#include "mm.h"
+#include "kernel.h"
+#include "faults.h"
+#include "tasks.h"
+#include "shell.h"
+
+#define HEARTBEAT PORTF,3
+
+//-----------------------------------------------------------------------------
+// Sub-Routine Prototypes
+//-----------------------------------------------------------------------------
+void initCpuTimer(void);
+void initFpu(void);
+void initHeartbeat(void);
+void heartBeatIsr(void);
+
+//-----------------------------------------------------------------------------
+// Main
+//-----------------------------------------------------------------------------
+
+int main(void)
+{
+    bool ok;
+
+    // Initialize hardware
+    initSystemClockTo40Mhz();
+    initTaskHw();
+    initCpuTimer();
+    initRtos();
+    initHeartbeat();
+    initFpu();
+    initMpu();
+    initHeap();
+
+    // Initialize mutexes and semaphores
+    //Mutexes for any global variable writes
+
+    //semaphore for imu and nrf data
+
+    // Add required idle process at lowest priority
+    ok =  createThread(idle, "Idle", 7, 512);
+    // Add other processes
+
+    // Start up RTOS
+    if (ok)
+        startRtos(); // never returns
+    else
+        while(true);
+}
+
+
+//-----------------------------------------------------------------------------
+// Sub-Routines
+//-----------------------------------------------------------------------------
+void initCpuTimer(void)
+{
+    SYSCTL_RCGCWTIMER_R |= SYSCTL_RCGCWTIMER_R0;
+    _delay_cycles(3);
+
+    WTIMER0_CTL_R  &= ~(TIMER_CTL_TAEN);
+    WTIMER0_CFG_R   = 0x4;
+    WTIMER0_TAMR_R  = TIMER_TAMR_TAMR_1_SHOT | TIMER_TAMR_TACDIR;
+    WTIMER0_TAV_R   = 0;
+}
+
+void initFpu(void) {
+    //Allow floating point access to thread mode
+    NVIC_CPAC_R = NVIC_CPAC_CP10_FULL | NVIC_CPAC_CP11_FULL;
+    //Turn off autosave of floating point registers
+    NVIC_FPCC_R &= ~(NVIC_FPCC_ASPEN | NVIC_FPCC_LSPEN);
+    __asm__(" DSB");
+    __asm__(" ISB");
+}
+
+void initHeartbeat(void)
+{
+    enablePort(PORTF);
+    selectPinPushPullOutput(HEARTBEAT);
+
+    SYSCTL_RCGCWTIMER_R |= SYSCTL_RCGCWTIMER_R0;
+    _delay_cycles(3);
+
+    WTIMER0_CTL_R  &= ~(TIMER_CTL_TBEN);
+    WTIMER0_CFG_R   = 0x4;
+    WTIMER0_TBMR_R  = TIMER_TBMR_TBMR_PERIOD;
+    WTIMER0_TBILR_R = 20e6;
+    WTIMER0_IMR_R  |= TIMER_IMR_TBTOIM;
+    NVIC_EN2_R |= (uint32_t)1 << (INT_WTIMER0B - 16 - 64);
+    WTIMER0_CTL_R  |= TIMER_CTL_TBEN;
+}
+
+void heartBeatIsr(void)
+{
+    WTIMER0_ICR_R |= TIMER_ICR_TBTOCINT;
+    togglePinValue(HEARTBEAT);
+}
+
