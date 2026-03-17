@@ -29,16 +29,20 @@ typedef void (*_fn)();
 #define RTOS_ENTRY 0
 
 // mutex
-#define MAX_MUTEXES 1
-#define MAX_MUTEX_QUEUE_SIZE 2
-#define resource 0
+#define MAX_MUTEXES             4
+#define MAX_MUTEX_QUEUE_SIZE    3
+
+#define mutex_bus_i2c1          0
+#define mutex_bus_spi1          1
+#define mutex_data_mag          2
+#define mutex_data_baro         3
 
 // semaphore
-#define MAX_SEMAPHORES 3
-#define MAX_SEMAPHORE_QUEUE_SIZE 2
-#define keyPressed 0
-#define keyReleased 1
-#define flashReq 2
+#define MAX_SEMAPHORES              2
+#define MAX_SEMAPHORE_QUEUE_SIZE    2
+
+#define semaphore_attitude_ready    0
+#define semapghore_telem_needed     1
 
 // tasks
 #define MAX_TASKS 12

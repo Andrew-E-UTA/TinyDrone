@@ -54,8 +54,14 @@ int main(void)
 
     // Initialize mutexes and semaphores
     //Mutexes for any global variable writes
+    initMutex(mutex_bus_i2c1);
+    initMutex(mutex_bus_spi1);
+    initMutex(mutex_data_baro);
+    initMutex(mutex_data_mag);
 
     //semaphore for imu and nrf data
+    initSemaphore(semapghore_telem_needed, 0);
+    initSemaphore(semaphore_attitude_ready, 0);
 
     // Add required idle process at lowest priority
     ok =  createThread(idle, "Idle", 7, 512);

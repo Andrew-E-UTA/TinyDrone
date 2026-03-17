@@ -90,7 +90,7 @@ void initTaskHw(void) {
  *  ESTIMATE ATTITUDE   (1kHz)          (Priority: 0)
  * ============================================================================
  *  Description: This process will read the accelerometer and gyro sensor every time step
- *  amd use Mahoney Sensor Fusion Algorithm to compute attitude estimateion
+ *  amd use Mahoney Sensor Fusion Algorithm to compute attitude estimation
  *
  *  Control Flow:
  *      1) Read Sensors
@@ -109,7 +109,11 @@ void initTaskHw(void) {
  *  Semaphores Used:
  *      1) AttitudeReady    (Post)
  * */
+void task_estimate_attitude(void) {
+    for(;;) {
 
+    }
+}
 
 /* ============================================================================
  * MOTOR CONTROL        (1kHz)          (Priority: 0)
@@ -125,7 +129,11 @@ void initTaskHw(void) {
  *  Semaphores Used:
  *      2) AttitudeReady    (Wait)
  * */
+void task_control_motors(void) {
+    for(;;) {
 
+    }
+}
 
 /* ============================================================================
  * MAG & BARO           (100Hz)         (Priority: 3)
@@ -141,6 +149,11 @@ void initTaskHw(void) {
  *      2) MagData          (write)
  *      3) BaroData         (write)
  * */
+void task_read_slow_sensors(void) {
+    for(;;) {
+
+    }
+}
 
 
 /* ============================================================================
@@ -164,6 +177,11 @@ void initTaskHw(void) {
  *      2) TxTelem          (Post)
  *
  * */
+void task_receive_input(void) {
+    for(;;) {
+
+    }
+}
 
 
 /* ============================================================================
@@ -182,6 +200,11 @@ void initTaskHw(void) {
  *  Semaphore Used:
  *      2) TxTelem          (Wait)
  * */
+void task_send_telem(void) {
+    for(;;) {
+
+    }
+}
 
 
 /* ============================================================================
