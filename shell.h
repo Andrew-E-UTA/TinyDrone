@@ -83,7 +83,7 @@ uint32_t strlen(const char *str);
 void strnappnd(char* to, const char* from, uint8_t n);
 bool strcmp(const char* s1, const char* s2);
 int32_t atoi32(const char* str);
-uint16_t pow(int base, int power);
+//uint16_t pow(int base, int power);
 void itoa32(uint32_t num, char str[MAX_DIG_U32]);
 void htoa(uint32_t num, char str[MAX_DIG_U32]);
 inline int min(int l, int r);

@@ -114,16 +114,16 @@ void strnappnd(char* to, const char* from, uint8_t n)
     to[i+j] = '\0';
 }
 
-uint16_t pow(int base, int power)
-{
-    uint8_t i = 0;
-    uint16_t result = base;
-    for(i = 0; i < power; i++)
-    {
-        result *= base;
-    }
-    return result;
-}
+//uint16_t pow(int base, int power)
+//{
+//    uint8_t i = 0;
+//    uint16_t result = base;
+//    for(i = 0; i < power; i++)
+//    {
+//        result *= base;
+//    }
+//    return result;
+//}
 
     //We reached the end of the buffer and it didnt exit false
     //  therefore all the letters matched and we can assume strings match

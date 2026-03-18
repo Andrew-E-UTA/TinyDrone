@@ -105,54 +105,35 @@
 
 typedef void (*func)(void);
 
-typedef struct _vec3 { int32_t x, y, z; } Vec3;
-
-typedef struct _axis_calibrations { int32_t scale, bias; } AxisCalibrations;
-
-typedef struct _accel_calibrations { AxisCalibrations x, y, z; } AccelCalibrations;
+typedef struct { float x, y, z; } Vec3f;
+typedef struct { Vec3f a, g; } MpuData;
 
 #ifndef nullptr
 #define nullptr ((void*)0)
 #endif
-
 /* SUB ROUTINE PROTOTYPES */
 
-extern void delayMs(uint16_t);
-
 bool mpu_init(void);
+MpuData mpu_read(void);
 
-bool mpu_get_raw(Vec3* p_a, Vec3* p_g);
-
-bool mpu_read_avg_acc(Vec3* p_a);
-
-bool mpu_read_avg_gyro(Vec3* p_g);
-
-//bool mpu_calibrate(Vec3* axis_data_l, Vec3* axis_data_h, AccelCalibrations* accelCalibs);
-
-//bool mpu_correct(Vec3* raw, Vec3* corrected, AccelCalibrations* accelCalibs);
-bool mpu_correct(Vec3* raw, Vec3* corrected, Vec3* al, Vec3* ah);
-float mpu_convert(int32_t q);
-
-void mpu_callback(void);
 #endif /* MPU6050_H_ */
 
 #ifdef MPU6050_IMPLEMENTATION
 
+#include "i2c1.h"
+
 //TODO: Add timeout for i2c so if no resp -> can err out (atm always resolves true or inf loop)
 bool mpu_writeReg(uint8_t reg, uint8_t data) {
-//    bool ok = true;
     writeI2c1Register(MPU6050_ADDR, reg, data);
     return true;
 }
 
 bool mpu_readReg(uint8_t reg, uint8_t* data) {
-//    bool ok = true;
     *data = readI2c1Register(MPU6050_ADDR, reg);
     return true;
 }
 
 bool mpu_readMulti(uint8_t reg, uint8_t* data, uint8_t len) {
-//    bool ok = true;
     readI2c1Registers(MPU6050_ADDR, reg, data, len);
     return true;
 }
@@ -211,7 +192,6 @@ bool mpu_init(void) {
     return ok;
 }
 
-
 // MPU6050 Acceleration Conversion
 /* +-----+---------+--------------+ *
  * | BIT |   FSR   |   LSB Sens.  | *
@@ -221,6 +201,7 @@ bool mpu_init(void) {
  * |  2  |  ± 8g   |  2^12 LSB/g  | *
  * |  3  |  ± 16g  |  2^11 LSB/g  | *
  * +-----+---------+--------------+ */
+
 //      MPU6050 Gyroscope Conversion
 /* +-----+--------------+-----------------+ *
  * | BIT |     FSR      |     LSB Sens.   | *
@@ -230,124 +211,22 @@ bool mpu_init(void) {
  * |  2  |  ± 1000 °/s  | 32.80 LSB/(°/s) | *
  * |  3  |  ± 2000 °/s  | 16.40 LSB/(°/s) | *
  * +-----+--------------+-----------------+ */
-
 //Range is always ~±32768
-//mpu_get_raw will just return a int32_t fixed point representation
-//  of the raw sensor data converted to G's or °/s
-//Conversion:
-//      g = raw / sens (float)
-//      g = raw << 16 / sens (fixed 16 whole, 16 fixed)
+#define ACCEL_SENS      16384.0
+#define GYRO_SENS       131.0
 
-#define base ((int32_t)(1<<16)/131)
-int32_t g_scales[] = {base * 1, base * 2, base * 4, base * 8};
-uint8_t a_shifts[] = {2, 3, 4, 5};
-
-//Returns the raw mpu sensor data in fixed point format Q16.16
-bool mpu_get_raw(Vec3* p_a, Vec3* p_g) {
-    bool ok = true;
+MpuData mpu_read(void) {
     uint8_t i = 0;
     uint8_t buffer[14];
-    int16_t ax, ay, az, gx, gy, gz;
+    MpuData m;
     mpu_readMulti(MPU6050_ACCEL_XOUT_H_R, buffer, 14);
-    if(p_a) {
-        ax = (buffer[i++] << 8 | buffer[i++]);
-        ay = (buffer[i++] << 8 | buffer[i++]);
-        az = (buffer[i++] << 8 | buffer[i++]);
-        p_a->x = ((int32_t)ax) << a_shifts[a_fsr];
-        p_a->y = ((int32_t)ay) << a_shifts[a_fsr];
-        p_a->z = ((int32_t)az) << a_shifts[a_fsr];
-    } else i+=6;
-    i+= 2;
-    if(p_g) {
-        gx = (buffer[i++] << 8 | buffer[i++]);
-        gy = (buffer[i++] << 8 | buffer[i++]);
-        gz = (buffer[i++] << 8 | buffer[i++]);
-        p_g->x = ((int32_t)gx) * g_scales[g_fsr];
-        p_g->y = ((int32_t)gy) * g_scales[g_fsr];
-        p_g->z = ((int32_t)gz) * g_scales[g_fsr];
-    }
-    return ok;
+    m.a.x = (float)((int16_t)(buffer[i++] << 8 | buffer[i++])) / ACCEL_SENS;
+    m.a.y = (float)((int16_t)(buffer[i++] << 8 | buffer[i++])) / ACCEL_SENS;
+    m.a.z = (float)((int16_t)(buffer[i++] << 8 | buffer[i++])) / ACCEL_SENS;
+    i+= 2;  //Skip Temp
+    m.g.x = (float)((int16_t)(buffer[i++] << 8 | buffer[i++])) / GYRO_SENS;
+    m.g.y = (float)((int16_t)(buffer[i++] << 8 | buffer[i++])) / GYRO_SENS;
+    m.g.z = (float)((int16_t)(buffer[i++] << 8 | buffer[i++])) / GYRO_SENS;
+    return m;
 }
-
-//upstream must ensure that the imu is in position before using this for calibration
-bool mpu_read_avg_acc(Vec3* p_a) {
-//    bool ok = true;
-    const int32_t count = 1000;
-    uint32_t i = 0;
-    int32_t sumx = 0, sumy = 0, sumz = 0;
-    for(; i < count; ++i) {
-        Vec3 a;
-        mpu_get_raw(&a, nullptr);
-        sumx += a.x;
-        sumy += a.y;
-        sumz += a.z;
-        delayMs(1);
-    }
-    p_a->x = sumx / count;
-    p_a->y = sumy / count;
-    p_a->z = sumz / count;
-    return true;
-}
-
-//upstream must ensure that the imu is in position before using this for calibration
-bool mpu_read_avg_gyro(Vec3* p_g) {
-    //    bool ok = true;
-        const int32_t count = 1000;
-        uint32_t i = 0;
-        int32_t sumx = 0, sumy = 0, sumz = 0;
-        for(; i < count; ++i) {
-            Vec3 g = {};
-            mpu_get_raw(nullptr, &g);
-            sumx += g.x;
-            sumy += g.y;
-            sumz += g.z;
-            delayMs(2);
-        }
-        p_g->x = sumx / count;
-        p_g->y = sumy / count;
-        p_g->z = sumz / count;
-        return true;
-}
-
-//bool mpu_calibrate(Vec3* axis_data_l, Vec3* axis_data_h, AccelCalibrations* accelCalibs) {
-//    accelCalibs->x.bias = (axis_data_h->x + axis_data_l->x) / 2;
-//    accelCalibs->y.bias = (axis_data_h->y + axis_data_l->y) / 2;
-//    accelCalibs->z.bias = (axis_data_h->z + axis_data_l->z) / 2;
-//
-//    accelCalibs->x.scale = (axis_data_h->x - axis_data_l->x) / 4;
-//    accelCalibs->y.scale = (axis_data_h->y - axis_data_l->y) / 4;
-//    accelCalibs->z.scale = (axis_data_h->z - axis_data_l->z) / 4;
-//    return true;
-//}
-
-bool mpu_correct(Vec3* raw, Vec3* corrected, Vec3* al, Vec3* ah) {
-//    corrected->x = ( raw->x + accelCalibs->x.bias) / accelCalibs->x.scale;
-//    corrected->y = ( raw->y + accelCalibs->y.bias) / accelCalibs->y.scale;
-//    corrected->z = ( raw->z + accelCalibs->z.bias) / accelCalibs->z.scale;
-    int32_t rx = ah->x - al->x;
-    int32_t ry = ah->y - al->y;
-    int32_t rz = ah->z - al->z;
-    const int32_t rr = 2*65536;
-    corrected->x = ((raw->x - al->x) * rr / rx) - 65536;
-    corrected->y = ((raw->y - al->y) * rr / ry) - 65536;
-    corrected->z = ((raw->z - al->z) * rr / rz) - 65536;
-
-    return true;
-}
-
-float mpu_convert(int32_t q) {
-    return (float)q / 65536.0;
-}
-
-Vec3 mpu_accel = {};
-Vec3 mpu_gyro = {};
-void mpu_callback(void) {
-    //read int stat to clear (can omit if using auto clear)
-    uint8_t data;
-    mpu_readReg(MPU6050_INT_STATUS_R, &data);
-
-    //handle interrupt (For now only has INT DATA RDY)
-    mpu_get_raw(&mpu_accel, &mpu_gyro);
-}
-
 #endif

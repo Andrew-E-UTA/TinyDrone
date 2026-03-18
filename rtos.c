@@ -40,7 +40,7 @@ void heartBeatIsr(void);
 
 int main(void)
 {
-    bool ok;
+    bool ok = true;
 
     // Initialize hardware
     initSystemClockTo40Mhz();
@@ -54,18 +54,22 @@ int main(void)
 
     // Initialize mutexes and semaphores
     //Mutexes for any global variable writes
-    initMutex(mutex_bus_i2c1);
-    initMutex(mutex_bus_spi1);
-    initMutex(mutex_data_baro);
-    initMutex(mutex_data_mag);
+    ok &= initMutex(mutex_bus_i2c1);
+    ok &= initMutex(mutex_bus_spi1);
+    ok &= initMutex(mutex_data_baro);
+    ok &= initMutex(mutex_data_mag);
 
     //semaphore for imu and nrf data
-    initSemaphore(semapghore_telem_needed, 0);
-    initSemaphore(semaphore_attitude_ready, 0);
+    ok &= initSemaphore(semapghore_telem_needed, 0);
+    ok &= initSemaphore(semaphore_attitude_ready, 0);
 
     // Add required idle process at lowest priority
-    ok =  createThread(idle, "Idle", 7, 512);
-    // Add other processes
+    ok &= createThread(idle, "Idle", 7, 512);
+    ok &= createThread(task_estimate_attitude,"attitude", 0, ceil512(2000));
+    ok &= createThread(task_control_motors, "pid", 0, ceil512(1000));
+    ok &= createThread(task_receive_input, "rc", 2, ceil512(1000));
+    ok &= createThread(task_read_slow_sensors, "aux", 3, ceil512(1000));
+    ok &= createThread(task_send_telem, "tlem", 2, ceil512(500));
 
     // Start up RTOS
     if (ok)

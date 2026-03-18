@@ -12,6 +12,15 @@
 // Device includes, defines, and assembler directives
 //-----------------------------------------------------------------------------
 
+/*
+ * Sources:
+ *  Mathematical Model of an IMU - nitinjsanket:
+ *      https://nitinjsanket.github.io/tutorials/attitudeest/madgwick#madgwickfilt
+ *
+ *  Madgwick_Filter - bjohnsonfl:
+ *      https://github.com/bjohnsonfl/Madgwick_Filter/blob/master/madgwickFilter.c
+ */
+
 //C-Std Lib.
 #include <stdint.h>
 #include <stdbool.h>
@@ -35,6 +44,8 @@
 #include "nrf24l01.h"
 #define MPU6050_IMPLEMENTATION
 #include "mpu6050.h"
+#define QUATERNION_IMPLEMENTATION
+#include "quaternion.h"
 #define QMC5883P_IMPLEMENTATION
 #include "qmc5883p.h"
 #include "bme280.h"
@@ -84,13 +95,32 @@ void initTaskHw(void) {
     //NRF (Wireless Transceiver)
     nrfInit();
     nrfSetTxMode(1, (uint8_t[]){0x11,0x22,0x33,0x44,0x55});
+
+    //Timer for integrating gyro
+    SYSCTL_RCGCWTIMER_R |= SYSCTL_RCGCWTIMER_R0;
+    _delay_cycles(3);
+
+    WTIMER0_CTL_R  &= ~(TIMER_CTL_TAEN);
+    WTIMER0_CFG_R   = 0x4;
+    WTIMER0_TAMR_R  = TIMER_TAMR_TAMR_1_SHOT | TIMER_TAMR_TACDIR;
+    WTIMER0_TAV_R   = 0;
+}
+
+#define SECONDS_PER_COUNT   0.000000025
+float delta(void) {
+    static uint32_t count_now = 0.0, count_last= 0.0;
+    count_last = count_now;
+    count_now = WTIMER0_TAV_R;
+    WTIMER0_TAV_R = 0;
+    return (count_now - count_last) * SECONDS_PER_COUNT;
 }
 
 /* ============================================================================
  *  ESTIMATE ATTITUDE   (1kHz)          (Priority: 0)
  * ============================================================================
- *  Description: This process will read the accelerometer and gyro sensor every time step
- *  amd use Mahoney Sensor Fusion Algorithm to compute attitude estimation
+ *  Description: This process will read the accelerometer and gyro sensor every
+ *  time step amd use Madgewick Sensor Fusion Algorithm to compute attitude
+ *  estimation
  *
  *  Control Flow:
  *      1) Read Sensors
@@ -109,9 +139,86 @@ void initTaskHw(void) {
  *  Semaphores Used:
  *      1) AttitudeReady    (Post)
  * */
-void task_estimate_attitude(void) {
-    for(;;) {
 
+#define GYRO_MSE    0.1
+#define PI          3.141592
+#define RAD2DEG     180.0/PI
+void task_estimate_attitude(void) {
+    MpuData m;
+    Quaternion q_est, q_prev, q_accel, q_gyro, q_grad;
+    float dt = 0.0;
+    float f[3] = {0.0};//Objective Function
+    float j[3][4] = {0.0};//Jacobian
+    float beta = -sqrtf(3.0f / 4.0f) * GYRO_MSE;
+
+    WTIMER0_CTL_R |= TIMER_CTL_TAEN;
+    for(;;) {
+        //Setup
+        dt = delta();
+        m = mpu_read();
+        q_prev = q_est;
+
+        //Estimate
+        q_accel = (Quaternion){.w=0, .x=m.a.x, .y=m.a.y, .z=m.a.z};
+        q_accel = quaternion_normalize(q_accel);
+        q_gyro  = (Quaternion){.w=0, .x=m.g.x*.5, .y=m.g.y*.5, .z=m.g.z*.5};
+        q_gyro = quaternion_hamilton(q_prev, q_gyro);
+
+        //Objective Function
+        f[0] = 2*(q_prev.x*q_prev.z - q_prev.w*q_prev.y) - q_accel.x;
+        f[1] = 2*(q_prev.w*q_prev.x + q_prev.y*q_prev.z) - q_accel.y;
+        f[2] = 2*(0.5 - q_prev.x*q_prev.x - q_prev.y*q_prev.y) - q_accel.z;
+
+        //Jacobian
+        j[0][0] = -2 * q_prev.y;
+        j[0][1] =  2 * q_prev.z;
+        j[0][2] = -2 * q_prev.w;
+        j[0][3] =  2 * q_prev.x;
+
+        j[1][0] =  2 * q_prev.x;
+        j[1][1] =  2 * q_prev.w;
+        j[1][2] =  2 * q_prev.z;
+        j[1][3] =  2 * q_prev.y;
+
+        j[2][0] =  0;
+        j[2][1] = -4 * q_prev.x;
+        j[2][2] = -4 * q_prev.y;
+        j[2][3] =  0;
+
+        //Gradiant (J' * F)
+        q_grad.w = j[0][0]*f[0] + j[1][0]*f[1] + j[2][0]*f[2];
+        q_grad.x = j[0][1]*f[0] + j[1][1]*f[1] + j[2][1]*f[2];
+        q_grad.y = j[0][2]*f[0] + j[1][2]*f[1] + j[2][2]*f[2];
+        q_grad.z = j[0][2]*f[0] + j[1][3]*f[1] + j[2][3]*f[2];
+        q_grad = quaternion_normalize(q_grad);
+        q_grad = quaternion_scalar(q_grad, beta);
+
+        //Fuse
+        q_est = quaternion_add(q_gyro, q_grad);
+
+        //Integrate
+        q_est = quaternion_scalar(q_est, dt);
+
+        //Apply
+        q_est = quaternion_add(q_prev, q_est);
+        q_est = quaternion_normalize(q_est);
+
+        /*
+    *roll  = atan2f((2*q.q3*q.q4 - 2*q.q1*q.q2), (2*q.q1*q.q1 + 2*q.q4*q.q4 -1));
+         */
+
+        //Convert to attitude
+        Attitude a = (Attitude) {
+            .pitch= RAD2DEG * -asinf(2*q_est.x*q_est*z + 2*q_est.w*q_est.y),
+            .roll=  RAD2DEG * atan2f(2*q_est.y*q_est.z - 2*q_est.w*q_est.x, 2*q_est.w*q_est.w - 2*q_est.x*q_est.x - 1),
+            .yaw=   RAD2DEG * atan2f(2*q_est.x*q_est.y - 2*q_est.w*q_est.z, 2*q_est.w*q_est.w - 2*q_est.x*q_est.x - 1)
+
+        };
+        lock(mutex_attitude);
+        global_write(mutex_attitude, &a);
+        unlock(mutex_attitude);
+        post(semaphore_attitude_ready);
+        sleep(1);
     }
 }
 

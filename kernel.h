@@ -25,6 +25,11 @@
 // function pointer
 typedef void (*_fn)();
 
+//Drone Specific Types
+typedef struct { float pitch, roll, yaw; } Attitude;
+typedef struct { float x, y, z; } MagData;
+typedef struct { float x, y, z; } BaroData;
+
 //State Machine
 #define RTOS_ENTRY 0
 
@@ -36,6 +41,7 @@ typedef void (*_fn)();
 #define mutex_bus_spi1          1
 #define mutex_data_mag          2
 #define mutex_data_baro         3
+#define mutex_attitude          4
 
 // semaphore
 #define MAX_SEMAPHORES              2
@@ -69,6 +75,8 @@ void wait(int8_t semaphore);
 void post(int8_t semaphore);
 void lock(int8_t mutex);
 void unlock(int8_t mutex);
+void global_read(uint8_t field, void* dst);
+void global_write(uint8_t field, void* src);
 
 void systickIsr(void);
 void pendSvIsr(void);

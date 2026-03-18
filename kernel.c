@@ -62,6 +62,11 @@ bool priorityScheduler = true;    // priority (true) or round-robin (false)
 bool priorityInheritance = false; // priority inheritance for mutexes
 bool preemption = true;          // preemption (true) or cooperative (false)
 
+//Drone Specific Globals
+Attitude attitude;
+MagData  mag_data;
+BaroData baro_data;
+
 // tcb
 #define NUM_PRIORITIES   8
 struct _tcb
@@ -90,6 +95,8 @@ struct _tcb
 #define SVC_REBOOT          0x7     //Reboots the device
 #define SVC_KILL            0x8     //Kills a task
 #define SVC_MALLOC          0x9     //Allows a task to request more memorys
+#define SVC_GLOBAL_READ     0xA     //Allows a task to read n bytes from global memory
+#define SVC_GLOBAL_WRITE    0xB     //Allows a task to write n bytes from global memory
 
 #define SYSTICK_TIME        40e3
 
@@ -151,11 +158,10 @@ uint8_t rtosScheduler(void)
     uint8_t minPrio = 0xFF;
     bool ok = false;
 
-    if(priorityScheduler)//if using prio, find highest prio
+    if(priorityScheduler)
         for(t = 0; t < MAX_TASKS; t++)
             if((minPrio > tcb[t].currentPriority) && CAN_RUN(t))
                 minPrio = tcb[t].currentPriority;
-    // round robin at that level
     while (!ok)
     {
         t = priorityScheduler?
@@ -275,6 +281,38 @@ void svCallIsr(void) {
     case(SVC_WAIT):     { _waitSemaphore(*getPsp());                 } break;
     case(SVC_POST):     { _postSemaphore(*getPsp());                 } break;
     case(SVC_REBOOT):   { NVIC_APINT_R = NVIC_APINT_VECTKEY | NVIC_APINT_SYSRESETREQ; }break;
+    case(SVC_GLOBAL_READ): {
+        switch(*getPsp()) {
+        case(mutex_attitude): {
+            Attitude* a = (Attitude*) *(getPsp()+1);
+            *a = attitude;
+        }break;
+        case(mutex_data_baro): {
+            BaroData* b = (BaroData*) *(getPsp()+1);
+            *b = baro_data;
+        }break;
+        case(mutex_data_mag): {
+            MagData* m = (MagData*) *(getPsp()+1);
+            *m = mag_data;
+        }break;
+        }
+    }break;
+    case(SVC_GLOBAL_WRITE): {
+        switch(*getPsp()) {
+        case(mutex_attitude): {
+            Attitude* a = (Attitude*) *(getPsp()+1);
+            attitude = *a;
+        }break;
+        case(mutex_data_baro): {
+            BaroData* b = (BaroData*) *(getPsp()+1);
+            baro_data = *b;
+        }break;
+        case(mutex_data_mag): {
+            MagData* m = (MagData*) *(getPsp()+1);
+            mag_data = *m;
+        }break;
+        }
+    }break;
     case(SVC_KILL): {
         uint32_t pid = *getPsp();
         uint8_t i;
@@ -290,34 +328,36 @@ void svCallIsr(void) {
     }
 }
 
-void yield(void)
-{
+void yield(void) {
     __asm(" SVC #0x1");
 }
 
-void sleep(uint32_t tick)
-{
+void sleep(uint32_t tick) {
     __asm(" SVC #0x2");
 }
 
-void wait(int8_t semaphore)
-{
+void wait(int8_t semaphore) {
     __asm(" SVC #0x5");
 }
 
-void post(int8_t semaphore)
-{
+void post(int8_t semaphore) {
     __asm(" SVC #0x6");
 }
 
-void lock(int8_t mutex)
-{
+void lock(int8_t mutex) {
     __asm(" SVC #0x3");
 }
 
-void unlock(int8_t mutex)
-{
+void unlock(int8_t mutex) {
     __asm(" SVC #0x4");
+}
+
+void global_read(uint8_t field, void* dst) {
+    __asm(" SVC #0xA");
+}
+
+void global_write(uint8_t field, void* src) {
+    __asm(" SVC #0xB");
 }
 
 uint8_t getTaskCurrent() {
