@@ -189,9 +189,11 @@ void task_estimate_attitude(void) {
         q_grad.w = j[0][0]*f[0] + j[1][0]*f[1] + j[2][0]*f[2];
         q_grad.x = j[0][1]*f[0] + j[1][1]*f[1] + j[2][1]*f[2];
         q_grad.y = j[0][2]*f[0] + j[1][2]*f[1] + j[2][2]*f[2];
-        q_grad.z = j[0][2]*f[0] + j[1][3]*f[1] + j[2][3]*f[2];
+        q_grad.z = j[0][3]*f[0] + j[1][3]*f[1] + j[2][3]*f[2];
         q_grad = quaternion_normalize(q_grad);
         q_grad = quaternion_scalar(q_grad, beta);
+
+        //TODO:Incorporate the Magnetometer data to compensate yaw
 
         //Fuse
         q_est = quaternion_add(q_gyro, q_grad);
@@ -203,13 +205,9 @@ void task_estimate_attitude(void) {
         q_est = quaternion_add(q_prev, q_est);
         q_est = quaternion_normalize(q_est);
 
-        /*
-    *roll  = atan2f((2*q.q3*q.q4 - 2*q.q1*q.q2), (2*q.q1*q.q1 + 2*q.q4*q.q4 -1));
-         */
-
         //Convert to attitude
         Attitude a = (Attitude) {
-            .pitch= RAD2DEG * -asinf(2*q_est.x*q_est*z + 2*q_est.w*q_est.y),
+            .pitch= RAD2DEG * -asinf(2*q_est.x*q_est.z + 2*q_est.w*q_est.y),
             .roll=  RAD2DEG * atan2f(2*q_est.y*q_est.z - 2*q_est.w*q_est.x, 2*q_est.w*q_est.w - 2*q_est.x*q_est.x - 1),
             .yaw=   RAD2DEG * atan2f(2*q_est.x*q_est.y - 2*q_est.w*q_est.z, 2*q_est.w*q_est.w - 2*q_est.x*q_est.x - 1)
 
