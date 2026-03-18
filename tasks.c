@@ -54,6 +54,11 @@
 #define QMC5883P_INT    PORTB,5
 #define BLUE PORTF,2
 
+
+Attitude attitude;
+MagData  mag_data;
+BaroData baro_data;
+
 //-----------------------------------------------------------------------------
 // Subroutines
 //-----------------------------------------------------------------------------
@@ -210,7 +215,7 @@ void task_estimate_attitude(void) {
             .yaw=   RAD2DEG * atan2f(2*q_est.x*q_est.y - 2*q_est.w*q_est.z, 2*q_est.w*q_est.w - 2*q_est.x*q_est.x - 1)
 
         };
-        atomic_write(mutex_attitude, &a);
+        atomic_write(&attitude, &a, sizeof(Attitude));
         post(semaphore_attitude_ready);
         sleep(1);
     }

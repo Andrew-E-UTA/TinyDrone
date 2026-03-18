@@ -62,10 +62,6 @@ bool priorityScheduler = true;    // priority (true) or round-robin (false)
 bool priorityInheritance = false; // priority inheritance for mutexes
 bool preemption = true;          // preemption (true) or cooperative (false)
 
-//Drone Specific Globals
-Attitude attitude;
-MagData  mag_data;
-BaroData baro_data;
 
 // tcb
 #define NUM_PRIORITIES   8
@@ -282,36 +278,10 @@ void svCallIsr(void) {
     case(SVC_POST):     { _postSemaphore(*getPsp());                 } break;
     case(SVC_REBOOT):   { NVIC_APINT_R = NVIC_APINT_VECTKEY | NVIC_APINT_SYSRESETREQ; }break;
     case(SVC_ATOMIC_READ): {
-        switch(*getPsp()) {
-        case(mutex_attitude): {
-            Attitude* a = (Attitude*) *(getPsp()+1);
-            *a = attitude;
-        }break;
-        case(mutex_data_baro): {
-            BaroData* b = (BaroData*) *(getPsp()+1);
-            *b = baro_data;
-        }break;
-        case(mutex_data_mag): {
-            MagData* m = (MagData*) *(getPsp()+1);
-            *m = mag_data;
-        }break;
-        }
+        bytecpy((void*)*getPsp(), (void*)*(getPsp()+1), *(getPsp()+2));
     }break;
     case(SVC_ATOMIC_WRITE): {
-        switch(*getPsp()) {
-        case(mutex_attitude): {
-            Attitude* a = (Attitude*) *(getPsp()+1);
-            attitude = *a;
-        }break;
-        case(mutex_data_baro): {
-            BaroData* b = (BaroData*) *(getPsp()+1);
-            baro_data = *b;
-        }break;
-        case(mutex_data_mag): {
-            MagData* m = (MagData*) *(getPsp()+1);
-            mag_data = *m;
-        }break;
-        }
+        bytecpy((void*)*(getPsp()+1), (void*)*getPsp(), *(getPsp()+2));
     }break;
     case(SVC_KILL): {
         uint32_t pid = *getPsp();
@@ -352,11 +322,11 @@ void unlock(int8_t mutex) {
     __asm(" SVC #0x4");
 }
 
-void atomic_read(uint8_t field, void* dst) {
+void atomic_read(void*src, void* dst, uint32_t size) {
     __asm(" SVC #0xA");
 }
 
-void atomic_write(uint8_t field, void* src) {
+void atomic_write(void* dst, void* src, uint32_t size) {
     __asm(" SVC #0xB");
 }
 

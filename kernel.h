@@ -75,8 +75,8 @@ void wait(int8_t semaphore);
 void post(int8_t semaphore);
 void lock(int8_t mutex);
 void unlock(int8_t mutex);
-void atomic_read(uint8_t field, void* dst);
-void atomic_write(uint8_t field, void* src);
+void atomic_read(void*src, void* dst, uint32_t size);
+void atomic_write(void* dst, void* src, uint32_t size);
 
 void systickIsr(void);
 void pendSvIsr(void);

@@ -78,7 +78,9 @@ typedef struct _uartArgs
 
 void _printArgs(const char str[], UartArgs uArgs);
 void strcpy(char* to, const char* from);
+void strncpy(char* to, const char* from, uint8_t n);
 void strcpyFill(char* to, const char* from, uint8_t len, char letter);
+void bytecpy(void* dst, void* src, uint32_t size);
 uint32_t strlen(const char *str);
 void strnappnd(char* to, const char* from, uint8_t n);
 bool strcmp(const char* s1, const char* s2);
