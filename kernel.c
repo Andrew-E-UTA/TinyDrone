@@ -95,8 +95,8 @@ struct _tcb
 #define SVC_REBOOT          0x7     //Reboots the device
 #define SVC_KILL            0x8     //Kills a task
 #define SVC_MALLOC          0x9     //Allows a task to request more memorys
-#define SVC_GLOBAL_READ     0xA     //Allows a task to read n bytes from global memory
-#define SVC_GLOBAL_WRITE    0xB     //Allows a task to write n bytes from global memory
+#define SVC_ATOMIC_READ     0xA     //Allows a task to read n bytes from global memory
+#define SVC_ATOMIC_WRITE    0xB     //Allows a task to write n bytes from global memory
 
 #define SYSTICK_TIME        40e3
 
@@ -281,7 +281,7 @@ void svCallIsr(void) {
     case(SVC_WAIT):     { _waitSemaphore(*getPsp());                 } break;
     case(SVC_POST):     { _postSemaphore(*getPsp());                 } break;
     case(SVC_REBOOT):   { NVIC_APINT_R = NVIC_APINT_VECTKEY | NVIC_APINT_SYSRESETREQ; }break;
-    case(SVC_GLOBAL_READ): {
+    case(SVC_ATOMIC_READ): {
         switch(*getPsp()) {
         case(mutex_attitude): {
             Attitude* a = (Attitude*) *(getPsp()+1);
@@ -297,7 +297,7 @@ void svCallIsr(void) {
         }break;
         }
     }break;
-    case(SVC_GLOBAL_WRITE): {
+    case(SVC_ATOMIC_WRITE): {
         switch(*getPsp()) {
         case(mutex_attitude): {
             Attitude* a = (Attitude*) *(getPsp()+1);
@@ -352,11 +352,11 @@ void unlock(int8_t mutex) {
     __asm(" SVC #0x4");
 }
 
-void global_read(uint8_t field, void* dst) {
+void atomic_read(uint8_t field, void* dst) {
     __asm(" SVC #0xA");
 }
 
-void global_write(uint8_t field, void* src) {
+void atomic_write(uint8_t field, void* src) {
     __asm(" SVC #0xB");
 }
 

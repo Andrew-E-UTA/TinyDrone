@@ -133,8 +133,6 @@ float delta(void) {
  *
  *  Mutexes Used:
  *      1) I2CBus           (Communicate)
- *      2) MagData          (Read)
- *      3) BaroData         (Read)
  *
  *  Semaphores Used:
  *      1) AttitudeReady    (Post)
@@ -212,9 +210,7 @@ void task_estimate_attitude(void) {
             .yaw=   RAD2DEG * atan2f(2*q_est.x*q_est.y - 2*q_est.w*q_est.z, 2*q_est.w*q_est.w - 2*q_est.x*q_est.x - 1)
 
         };
-        lock(mutex_attitude);
-        global_write(mutex_attitude, &a);
-        unlock(mutex_attitude);
+        atomic_write(mutex_attitude, &a);
         post(semaphore_attitude_ready);
         sleep(1);
     }
