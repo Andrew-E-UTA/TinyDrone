@@ -29,12 +29,8 @@
 // Pins
 #define CSN PORTD,1
 #define CE  PORTE,3
-#define IRQ PORTB,5
+#define NRF24l01_INT    PORTB, 5
 
-// LEDs
-#define RED_LED PORTF,1
-#define BLUE_LED PORTF,2
-#define GREEN_LED PORTF,3
 
 //-----------------------------------------------------------------------------
 // Global variables
@@ -52,23 +48,20 @@ void nrfIrqIsr() {
 
     // Data Received
     if(status & STATUS_RX_DR) {
-        togglePinValue(GREEN_LED);
         dataReceived = true;
     }
 
     // Data Sent
     if(status & STATUS_TX_DS) {
-        togglePinValue(BLUE_LED);
     }
 
     // Max number of retries
     if(status & STATUS_MAX_RT) {
-        togglePinValue(RED_LED);
     }
 
     nrfWriteReg(STATUS, CLEAR_STATUS_INTS);         // Clear interrupts on module
     nrfReadRxPayload(nrfPayload);
-    clearPinInterrupt(IRQ);                         // Clear pin interrupt
+    clearPinInterrupt(NRF24l01_INT);                         // Clear pin interrupt
 }
 
 void nrfCsnEnable() {
@@ -211,29 +204,8 @@ void nrfQuickRxMode(void) {
 }
 
 void nrfInit() {
-
-    // Enable clocks
-    enablePort(PORTB);
-    enablePort(PORTD);
-    enablePort(PORTE);
-    enablePort(PORTF);
-
-    // Set up LEDs
-    selectPinPushPullOutput(RED_LED);
-    selectPinPushPullOutput(GREEN_LED);
-    selectPinPushPullOutput(BLUE_LED);
-
-    // Configure pins for nrf module
-    selectPinPushPullOutput(CSN);
     nrfCsnDisable();
-    selectPinPushPullOutput(CE);
     setPinValue(CE, 0);
-
-    // Set up interrupt for IRQ pin (Active low)
-    selectPinDigitalInput(IRQ);
-    selectPinInterruptFallingEdge(IRQ);
-    enablePinInterrupt(IRQ);
-    enableNvicInterrupt(INT_GPIOB);
 
     // Basic Module Configuration
     nrfWriteReg(CONFIG, PWR_DWN_NO_CONFIG);             // Power down & clear register

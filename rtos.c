@@ -44,8 +44,8 @@ int main(void)
 
     // Initialize hardware
     initSystemClockTo40Mhz();
+    initSystemClockTo80Mhz();
     initTaskHw();
-//    initCpuTimer();
     initRtos();
     initHeartbeat();
     initFpu();
@@ -53,22 +53,14 @@ int main(void)
     initHeap();
 
     // Initialize mutexes and semaphores
-    //Mutexes for any global variable writes
     ok &= initMutex(mutex_bus_i2c1);
     ok &= initMutex(mutex_bus_spi1);
-    ok &= initMutex(mutex_data_baro);
-    ok &= initMutex(mutex_data_mag);
-
-    //semaphore for imu and nrf data
-    ok &= initSemaphore(semapghore_telem_needed, 0);
-    ok &= initSemaphore(semaphore_attitude_ready, 0);
 
     // Add required idle process at lowest priority
     ok &= createThread(idle, "Idle", 7, 512);
     ok &= createThread(task_estimate_attitude,"attitude", 0, ceil512(2000));
     ok &= createThread(task_control_motors, "pid", 0, ceil512(1000));
     ok &= createThread(task_receive_input, "rc", 2, ceil512(1000));
-    ok &= createThread(task_read_slow_sensors, "aux", 3, ceil512(1000));
     ok &= createThread(task_send_telem, "tlem", 2, ceil512(500));
 
     // Start up RTOS
@@ -113,7 +105,7 @@ void initHeartbeat(void)
     WTIMER0_CTL_R  &= ~(TIMER_CTL_TBEN);
     WTIMER0_CFG_R   = 0x4;
     WTIMER0_TBMR_R  = TIMER_TBMR_TBMR_PERIOD;
-    WTIMER0_TBILR_R = 20e6;
+    WTIMER0_TBILR_R = 40e6;
     WTIMER0_IMR_R  |= TIMER_IMR_TBTOIM;
     NVIC_EN2_R |= (uint32_t)1 << (INT_WTIMER0B - 16 - 64);
     WTIMER0_CTL_R  |= TIMER_CTL_TBEN;

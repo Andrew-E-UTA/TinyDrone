@@ -94,7 +94,7 @@ struct _tcb
 #define SVC_ATOMIC_READ     0xA     //Allows a task to read n bytes from global memory
 #define SVC_ATOMIC_WRITE    0xB     //Allows a task to write n bytes from global memory
 
-#define SYSTICK_TIME        40e3
+#define SYSTICK_TIME        80e3
 
 //-----------------------------------------------------------------------------
 // Subroutines
