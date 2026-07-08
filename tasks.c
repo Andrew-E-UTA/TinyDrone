@@ -102,21 +102,21 @@ void initTaskHw(void) {
     nrfSetTxMode(1, (uint8_t[]){0x11,0x22,0x33,0x44,0x55});
 
     //Timer for integrating gyro
-    SYSCTL_RCGCWTIMER_R |= SYSCTL_RCGCWTIMER_R0;
+    SYSCTL_RCGCWTIMER_R |= SYSCTL_RCGCWTIMER_R1;
     _delay_cycles(3);
 
-    WTIMER0_CTL_R  &= ~(TIMER_CTL_TAEN);
-    WTIMER0_CFG_R   = 0x4;
-    WTIMER0_TAMR_R  = TIMER_TAMR_TAMR_1_SHOT | TIMER_TAMR_TACDIR;
-    WTIMER0_TAV_R   = 0;
+    WTIMER1_CTL_R  &= ~(TIMER_CTL_TAEN);
+    WTIMER1_CFG_R   = 0x4;
+    WTIMER1_TAMR_R  = TIMER_TAMR_TAMR_1_SHOT | TIMER_TAMR_TACDIR;
+    WTIMER1_TAV_R   = 0;
 }
 
 #define SECONDS_PER_COUNT   0.000000025
 float delta(void) {
     static uint32_t count_now = 0.0, count_last= 0.0;
     count_last = count_now;
-    count_now = WTIMER0_TAV_R;
-    WTIMER0_TAV_R = 0;
+    count_now = WTIMER1_TAV_R;
+    WTIMER1_TAV_R = 0;
     return (count_now - count_last) * SECONDS_PER_COUNT;
 }
 
@@ -146,18 +146,18 @@ float delta(void) {
 #define GYRO_MSE    0.1
 #define PI          3.141592
 #define RAD2DEG     180.0/PI
-void task_estimate_attitude(void) {
+void task_estimate_attitude(void) {// Current clocks: ~8k
     MpuData m;
-    Quaternion q_est, q_prev, q_accel, q_gyro, q_grad;
+    Quaternion q_est = {1,0,0,0}, q_prev, q_accel, q_gyro, q_grad;
     float dt = 0.0;
     float f[3] = {0.0};//Objective Function
     float j[3][4] = {0.0};//Jacobian
     float beta = -sqrtf(3.0f / 4.0f) * GYRO_MSE;
 
-    WTIMER0_CTL_R |= TIMER_CTL_TAEN;
+    WTIMER1_CTL_R |= TIMER_CTL_TAEN;
     for(;;) {
         //Setup
-        dt = delta();
+        dt = 0.001;//delta();
         m = mpu_read();
         q_prev = q_est;
 
@@ -213,7 +213,6 @@ void task_estimate_attitude(void) {
             .pitch= RAD2DEG * -asinf(2*q_est.x*q_est.z + 2*q_est.w*q_est.y),
             .roll=  RAD2DEG * atan2f(2*q_est.y*q_est.z - 2*q_est.w*q_est.x, 2*q_est.w*q_est.w - 2*q_est.x*q_est.x - 1),
             .yaw=   RAD2DEG * atan2f(2*q_est.x*q_est.y - 2*q_est.w*q_est.z, 2*q_est.w*q_est.w - 2*q_est.x*q_est.x - 1)
-
         };
         atomic_write(&attitude, &a, sizeof(Attitude));
         post(semaphore_attitude_ready);

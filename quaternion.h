@@ -57,6 +57,7 @@ inline Quaternion quaternion_sub(Quaternion q1, Quaternion q2) {
 
 inline Quaternion quaternion_normalize(Quaternion q1) {
     float norm = quaternion_norm(q1);
+    if(norm == 0.0) return q1;
     return (Quaternion) {
         .w= q1.w/norm,
         .x= q1.x/norm,

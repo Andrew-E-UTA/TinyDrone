@@ -45,7 +45,7 @@ int main(void)
     // Initialize hardware
     initSystemClockTo40Mhz();
     initTaskHw();
-    initCpuTimer();
+//    initCpuTimer();
     initRtos();
     initHeartbeat();
     initFpu();
