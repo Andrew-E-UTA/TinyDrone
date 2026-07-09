@@ -94,6 +94,8 @@ void gpioBIsr(void) {
 void gpioEIsr(void) {
     if(isPinInterrupt(MPU6050_INT)) {
         _postSemaphore(semaphore_mpu_data_ready);
+
+//        readI2c1Register(MPU6050_ADDR, MPU6050_INT_STATUS_R); //clear int for mpu
         clearPinInterrupt(MPU6050_INT);
     }
 }
@@ -114,12 +116,12 @@ void initTaskHw(void) {
     enablePort(PORTE);
 
 //    selectPinDigitalInput(QMC5883P_INT);
-    selectPinDigitalInput(MPU6050_INT);
+    selectPinDigitalInput(MPU6050_INT); //cleared when read INT_STATUS
     selectPinDigitalInput(NRF24L01_INT);
     selectPinPushPullOutput(NRF24L01_CSN);
     selectPinPushPullOutput(NRF24L01_CE);
 
-    selectPinInterruptHighLevel(MPU6050_INT);
+    selectPinInterruptRisingEdge(MPU6050_INT);
 //    selectPinInterruptHighLevel(QMC5883P_INT);
     selectPinInterruptFallingEdge(NRF24L01_INT);
 
