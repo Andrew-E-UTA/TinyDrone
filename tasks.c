@@ -510,7 +510,7 @@ void task_ahrs_pid(void) {
             pwm2 += 100;
             pwm3 += 100;
         }
-        if(roll_correction > 0)
+        if(roll_correction > 0) {
             pwm0 += 100;
             pwm1 -= 100;
             pwm2 += 100;
@@ -531,7 +531,7 @@ void task_ahrs_pid(void) {
 //            pwm1 -= 100;
 //            pwm2 += 100;
 //            pwm3 += 100;
-        }
+//        }
 
         //        if(elevation > 0) {
         //            pwm0 += 100;
