@@ -82,6 +82,13 @@ typedef struct {
     float min, max;
 } PidController;
 
+#define MAX_NRF_PACKET_SIZE 32
+typedef struct {
+    uint8_t rx, ry, lx, ly;
+    uint8_t flags;
+    uint8_t [MAX_NRF_PACKET_SIZE - 5] reserved; //always 0
+} NRF_Packet;
+
 Vec3f attitude = {.x=0, .y=0, .z=0};
 
 //-----------------------------------------------------------------------------
@@ -415,6 +422,7 @@ void task_ahrs_pid(void) {
                                .min=-20,
                                .max=20
     };
+    float pwm0 = {}, pwm1 = {}, pwm2 = {}, pwm3 = {};
 
 
     for(;;) {
@@ -455,11 +463,16 @@ void task_ahrs_pid(void) {
 
         Vec3f setpoint;
         atomic_read(&attitude, &setpoint, sizeof(Vec3f));
-        pid_update(&pitch_pid, setpoint.x, euler.x, dt_s);
-        pid_update(&roll_pid, setpoint.y, euler.y, dt_s);
-        pid_update(&yaw_pid, setpoint.z, euler.z, dt_s);
+        float pitch_correction = pid_update(&pitch_pid, setpoint.x, euler.x, dt_s);
+        float roll_correction = pid_update(&roll_pid, setpoint.y, euler.y, dt_s);
+        float yaw_correction = pid_update(&yaw_pid, setpoint.z, euler.z, dt_s);
 
         //SET PWM
+        if(pitch_correction > 0) {
+
+        } else {
+
+        }
 
 
         char buffer[100];
