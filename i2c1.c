@@ -1,4 +1,5 @@
-// I2C1 Library
+// i2c1.c
+//Andrew Espinoza
 
 //-----------------------------------------------------------------------------
 // Hardware Target
@@ -6,7 +7,7 @@
 
 // Target Platform: EK-TM4C123GXL
 // Target uC:       TM4C123GH6PM
-// System Clock:    40 MHz
+// System Clock:    80 MHz
 
 // Hardware configuration:
 // I2C devices on I2C bus 1 with 2kohm pullups on SDA and SCL (PB3 and PB2)
@@ -24,6 +25,8 @@
 // Pins
 #define I2C1SCL PORTA,6
 #define I2C1SDA PORTA,7
+
+#define TIMEOUT_COUNT 10000
 
 //-----------------------------------------------------------------------------
 // Global variables
@@ -49,6 +52,7 @@ void initI2c1(void)
     // Configure I2C1 peripheral
     I2C1_MCR_R = 0;                                     // disable to program
     I2C1_MTPR_R = 19;                                   // (40MHz/2) / (6+4) / (19+1) = 100kbps
+                                                        // (80MHz/2) / (6+4) / (19+1) = 200kbps
     I2C1_MCR_R = I2C_MCR_MFE;                           // master
     I2C1_MCS_R = I2C_MCS_STOP;
 }
@@ -60,7 +64,8 @@ void writeI2c1Data(uint8_t add, uint8_t data)
     I2C1_MDR_R = data;
     I2C1_MICR_R = I2C_MICR_IC;
     I2C1_MCS_R = I2C_MCS_START | I2C_MCS_RUN | I2C_MCS_STOP;
-    while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0);
+    uint32_t count = TIMEOUT_COUNT; while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0 && count--);
+    if(isI2c1Error()) { handle_error(); }
 }
 
 uint8_t readI2c1Data(uint8_t add)
@@ -68,7 +73,8 @@ uint8_t readI2c1Data(uint8_t add)
     I2C1_MSA_R = (add << 1) | 1; // add:r/~w=1
     I2C1_MICR_R = I2C_MICR_IC;
     I2C1_MCS_R = I2C_MCS_START | I2C_MCS_RUN | I2C_MCS_STOP;
-    while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0);
+    uint32_t count = TIMEOUT_COUNT; while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0 && count--);
+    if(isI2c1Error()) { handle_error(); }
     return I2C1_MDR_R;
 }
 
@@ -80,7 +86,8 @@ void writeI2c1Register(uint8_t add, uint8_t reg, uint8_t data)
     I2C1_MDR_R = reg;
     I2C1_MICR_R = I2C_MICR_IC;
     I2C1_MCS_R = I2C_MCS_START | I2C_MCS_RUN;
-    while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0);
+    uint32_t count = TIMEOUT_COUNT; while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0 && count--);
+    if(isI2c1Error()) { handle_error(); }
 
     // write data to register
     I2C1_MDR_R = data;
@@ -92,6 +99,7 @@ void writeI2c1Register(uint8_t add, uint8_t reg, uint8_t data)
 void writeI2c1Registers(uint8_t add, uint8_t reg, const uint8_t data[], uint16_t size)
 {
     uint16_t i;
+    uint32_t count;
     // send address and register
     I2C1_MSA_R = add << 1 | 0; // add:r/~w=0
     I2C1_MDR_R = reg;
@@ -99,26 +107,30 @@ void writeI2c1Registers(uint8_t add, uint8_t reg, const uint8_t data[], uint16_t
     {
         I2C1_MICR_R = I2C_MICR_IC;
         I2C1_MCS_R = I2C_MCS_START | I2C_MCS_RUN | I2C_MCS_STOP;
-        while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0);
+         count = TIMEOUT_COUNT; while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0 && count--);
+    if(isI2c1Error()) { handle_error(); }
     }
     else
     {
         I2C1_MICR_R = I2C_MICR_IC;
         I2C1_MCS_R = I2C_MCS_START | I2C_MCS_RUN;
-        while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0);
+        uint32_t count = TIMEOUT_COUNT; while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0 && count--);
+        if(isI2c1Error()) { handle_error(); }
         // first size-1 bytes
         for (i = 0; i < size-1; i++)
         {
             I2C1_MDR_R = data[i];
             I2C1_MICR_R = I2C_MICR_IC;
             I2C1_MCS_R = I2C_MCS_RUN;
-            while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0);
+             count = TIMEOUT_COUNT; while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0 && count--);
+        if(isI2c1Error()) { handle_error(); }
         }
         // last byte
         I2C1_MDR_R = data[size-1];
         I2C1_MICR_R = I2C_MICR_IC;
         I2C1_MCS_R = I2C_MCS_RUN | I2C_MCS_STOP;
-        while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0);
+         count = TIMEOUT_COUNT; while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0 && count--);
+        if(isI2c1Error()) { handle_error(); }
     }
 }
 
@@ -129,13 +141,15 @@ uint8_t readI2c1Register(uint8_t add, uint8_t reg)
     I2C1_MDR_R = reg;
     I2C1_MICR_R = I2C_MICR_IC;
     I2C1_MCS_R = I2C_MCS_START | I2C_MCS_RUN;
-    while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0);
+    uint32_t count = TIMEOUT_COUNT; while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0 && count--);
+    if(isI2c1Error()) { handle_error(); }
 
     // read data from register
     I2C1_MSA_R = (add << 1) | 1; // add:r/~w=1
     I2C1_MICR_R = I2C_MICR_IC;
     I2C1_MCS_R = I2C_MCS_START | I2C_MCS_RUN | I2C_MCS_STOP;
-    while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0);
+     count = TIMEOUT_COUNT; while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0 && count--);
+    if(isI2c1Error()) { handle_error(); }
     return I2C1_MDR_R;
 }
 
@@ -147,7 +161,8 @@ void readI2c1Registers(uint8_t add, uint8_t reg, uint8_t data[], uint8_t size)
     I2C1_MDR_R = reg;
     I2C1_MICR_R = I2C_MICR_IC;
     I2C1_MCS_R = I2C_MCS_START | I2C_MCS_RUN;
-    while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0);
+    uint32_t count = TIMEOUT_COUNT; while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0 && count--);
+    if(isI2c1Error()) { handle_error(); }
 
     if (size == 1)
     {
@@ -155,7 +170,8 @@ void readI2c1Registers(uint8_t add, uint8_t reg, uint8_t data[], uint8_t size)
         I2C1_MSA_R = (add << 1) | 1; // add:r/~w=1
         I2C1_MICR_R = I2C_MICR_IC;
         I2C1_MCS_R = I2C_MCS_START | I2C_MCS_RUN | I2C_MCS_STOP;
-        while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0);
+         count = TIMEOUT_COUNT; while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0 && count--);
+        if(isI2c1Error()) { handle_error(); }
         data[i++] = I2C1_MDR_R;
     }
     else if (size > 1)
@@ -164,20 +180,23 @@ void readI2c1Registers(uint8_t add, uint8_t reg, uint8_t data[], uint8_t size)
         I2C1_MSA_R = (add << 1) | 1; // add:r/~w=1
         I2C1_MICR_R = I2C_MICR_IC;
         I2C1_MCS_R = I2C_MCS_START | I2C_MCS_RUN | I2C_MCS_ACK;
-        while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0);
+         count = TIMEOUT_COUNT; while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0 && count--);
+        if(isI2c1Error()) { handle_error(); }
         data[i++] = I2C1_MDR_R;
         // read size-2 bytes with ack
         while (i < size-1)
         {
             I2C1_MICR_R = I2C_MICR_IC;
             I2C1_MCS_R = I2C_MCS_RUN | I2C_MCS_ACK;
-            while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0);
+             count = TIMEOUT_COUNT; while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0 && count--);
+        if(isI2c1Error()) { handle_error(); }
             data[i++] = I2C1_MDR_R;
         }
         // last byte of read with nack
         I2C1_MICR_R = I2C_MICR_IC;
         I2C1_MCS_R = I2C_MCS_RUN | I2C_MCS_STOP;
-        while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0);
+         count = TIMEOUT_COUNT; while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0 && count--);
+        if(isI2c1Error()) { handle_error(); }
         data[i++] = I2C1_MDR_R;
     }
 }
@@ -187,12 +206,29 @@ bool pollI2c1Address(uint8_t add)
     I2C1_MSA_R = (add << 1) | 1; // add:r/~w=1
     I2C1_MICR_R = I2C_MICR_IC;
     I2C1_MCS_R = I2C_MCS_START | I2C_MCS_RUN | I2C_MCS_STOP;
-    while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0);
+    uint32_t count = TIMEOUT_COUNT; while ((I2C1_MRIS_R & I2C_MRIS_RIS) == 0 && count--);
+    if(isI2c1Error()) { handle_error(); }
     return !(I2C1_MCS_R & I2C_MCS_ERROR);
 }
 
 bool isI2c1Error(void)
 {
     return (I2C1_MCS_R & I2C_MCS_ERROR);
+}
+
+void handle_error(void) 
+{
+    // Disable the I2C master
+    I2C1_MCR_R = 0;
+    // Re-enable with master mode
+    I2C1_MCR_R = I2C_MCR_MFE;
+    // Restore baud rate (100 kbps at 40 MHz system clock)
+    I2C1_MTPR_R = 19;
+    // Clear any pending interrupt
+    I2C1_MICR_R = I2C_MICR_IC;
+    // Ensure STOP condition is sent (just in case)
+    I2C1_MCS_R = I2C_MCS_STOP;
+    // Small delay to let the STOP complete
+    uint8_t i; for (i = 0; i < 100; i++);
 }
 

@@ -1,16 +1,22 @@
-// Tasks
-// J Losh
+// Tasks.c
+//Andrew Espinoza
 
 //-----------------------------------------------------------------------------
 // Hardware Target
 //-----------------------------------------------------------------------------
 
+// Target Platform: EK-TM4C123GXL
 // Target uC:       TM4C123GH6PM
-// System Clock:    40 MHz
+// System Clock:    80 MHz
 
-//-----------------------------------------------------------------------------
-// Device includes, defines, and assembler directives
-//-----------------------------------------------------------------------------
+// Hardware configuration:
+// nRF24L01+ Wireless Transceiver Module on Spi2
+//   MOSI (SSI0Tx)  on PD3
+//   MISO (SSI0Rx)  on PD2
+//   SCLK (SSI0Clk) on PD0
+//   CSN  (SSI0FSs) on PD1
+//   CE   (Rx | Tx) on PE3
+//   IRQ  (INT)     on PB5
 
 /*
  * Sources:
@@ -28,6 +34,10 @@
  *
  */
 
+//-----------------------------------------------------------------------------
+// Device includes, defines, and assembler directives
+//-----------------------------------------------------------------------------
+
 //C-Std Lib.
 #include <stdint.h>
 #include <stdbool.h>
@@ -44,7 +54,7 @@
 #include "uart0.h"
 #include "gpio.h"
 #include "i2c1.h"
-#include "spi1.h"
+#include "spi2.h"
 
 //Device Drivers
 #include "shell.h"
@@ -56,11 +66,15 @@
 #include "qmc5883p.h"
 #include "bme280.h"
 
+#define NRF24L01_CE     PORTA,2
+#define NRF24L01_CSN    PORTA,3
+#define NRF24L01_INT    PORTA,4
+
 #define MPU6050_INT     PORTE,4
-//#define QMC5883P_INT    PORTB,5
-#define NRF24L01_INT    PORTB,5
-#define NRF24L01_CSN    PORTD,1
-#define NRF24L01_CE     PORTE,3
+
+#define RED_LED         PORTF,1
+#define BLUE_LED        PORTF,2
+
 
 #define PIN_0           0x01
 #define PIN_1           0x02
@@ -71,8 +85,6 @@
 #define PIN_6           0x40
 #define PIN_7           0x80
 
-#define RED_LED PORTF,1
-#define BLUE_LED PORTF,2
 
 //Drone Specific Types
 typedef struct { float pitch, roll, yaw; } Attitude;
@@ -87,7 +99,7 @@ typedef struct {
 
 #define MAX_NRF_PACKET_SIZE 32
 typedef struct {
-    uint8_t rx, ry, lx, ly;
+    int8_t rx, ry, lx, ly;
     uint8_t flags;
     uint8_t reserved[MAX_NRF_PACKET_SIZE - 5] ; //always 0
 } NRF_Packet;
@@ -120,16 +132,15 @@ void initTaskHw(void) {
     initUart0();
     setUart0BaudRate(115200, 80e6);
     initI2c1();
-    initSpi1(USE_SSI_RX);
-    setSpi1BaudRate(4e6, 80e6);
-    setSpi1Mode(0, 0);
+    initSpi2(USE_SS2_RX);
+    setSpi2BaudRate(4e6, 80e6);
+    setSpi2Mode(0, 0);
 
     //GPIO (mpu, qmc, nrf interrupts)
-    enablePort(PORTB);
-    enablePort(PORTD);
+    enablePort(PORTA);
     enablePort(PORTE);
-
     enablePort(PORTF);
+
     selectPinPushPullOutput(BLUE_LED);
     selectPinPushPullOutput(RED_LED);
 
@@ -168,7 +179,6 @@ void initTaskHw(void) {
     qmc_init();
     initBme280();
     nrfInit();
-    nrfSetTxMode(1, (uint8_t[]){0x11,0x22,0x33,0x44,0x55});
 }
 
 float minf(float a, float b) {
@@ -406,31 +416,19 @@ void task_ahrs_pid(void) {
     float dt_marg_s = 0.0f;
     Quaternion q_est = {1.0f, 0.0f, 0.0f, 0.0f};
     PidController pitch_pid = {
-                               .kp=.5,
-                               .ki=.5,
-                               .kd=.5,
-                               .integral=0,
-                               .prev_diff=0,
-                               .min=-20,
-                               .max=20
+                               .kp=.5, .ki=.5, .kd=.5,
+                               .integral=0, .prev_diff=0,
+                               .min=-20, .max=20
     };
     PidController roll_pid  = {
-                               .kp=.5,
-                               .ki=.5,
-                               .kd=.5,
-                               .integral=0,
-                               .prev_diff=0,
-                               .min=-20,
-                               .max=20
+                               .kp=.5, .ki=.5, .kd=.5,
+                               .integral=0, .prev_diff=0,
+                               .min=-20, .max=20
     };
     PidController yaw_pid   = {
-                               .kp=.5,
-                               .ki=.5,
-                               .kd=.5,
-                               .integral=0,
-                               .prev_diff=0,
-                               .min=-20,
-                               .max=20
+                               .kp=.5, .ki=.5, .kd=.5,
+                               .integral=0, .prev_diff=0,
+                               .min=-20, .max=20
     };
     float pwm0 = 0.0f, pwm1 = 0.0f, pwm2 = 0.0f, pwm3 = 0.0f;
 
@@ -459,6 +457,7 @@ void task_ahrs_pid(void) {
 
         Vec3f euler;
         float dt_s = deltaSeconds();
+        dt_marg_s += dt_s;
         //Run the Full 9DOF MARG AHRS Update
         if(data & QMC5883P_STAT_DRDY && !(data & QMC5883P_STAT_OVFL)) {
             setPinValue(BLUE_LED, 1);
@@ -479,82 +478,30 @@ void task_ahrs_pid(void) {
         float yaw_correction = pid_update(&yaw_pid, setpoint.z, euler.z, dt_s);
 
         //SET PWM (NOT FINISHED OR being used yet)
-//        bool _armed;
-//        atomic_read(&armed, &_armed, sizeof(bool));
-//        if(!_armed) {
-//            pwm0 = 0;
-//            pwm1 = 0;
-//            pwm2 = 0;
-//            pwm3 = 0;
-//            continue;
-//        }
-//
-//        /*
-//         *         Front
-//         *
-//         *  (PWM0)       (PWM1)
-//         *      O          O
-//         *       \        /
-//         *        +------+
-//         *        |  /\  |
-//         *        |  ||  |
-//         *        +------+
-//         *       /        \
-//         *      O          O
-//         *  (PWM2)       (PWM3)
-//         *
-//         *          Back
-//         */
-//
-//
-//        //MIGHT NEED TO CHANGE SIGN OF THESE AND AMOUNT to reflect amount of correction
-//        if(pitch_correction > 0) {
-//            pwm0 += 100;
-//            pwm1 += 100;
-//            pwm2 -= 100;
-//            pwm3 -= 100;
-//        } else {
-//            pwm0 -= 100;
-//            pwm1 -= 100;
-//            pwm2 += 100;
-//            pwm3 += 100;
-//        }
-//        if(roll_correction > 0) {
-//            pwm0 += 100;
-//            pwm1 -= 100;
-//            pwm2 += 100;
-//            pwm3 -= 100;
-//        } else {
-//            pwm0 -= 100;
-//            pwm1 += 100;
-//            pwm2 -= 100;
-//            pwm3 += 100;
-//        }
-//        if(yaw_correction > 0) {
-//            pwm0 -= 100;
-//            pwm1 -= 100;
-//            pwm2 += 100;
-//            pwm3 += 100;
-//        } else {
-//            pwm0 -= 100;
-//            pwm1 -= 100;
-//            pwm2 += 100;
-//            pwm3 += 100;
-//        }
-//        if(elevation > 0) {
-//            pwm0 += 100;
-//            pwm1 += 100;
-//            pwm2 += 100;
-//            pwm3 += 100;
-//        } else {
-//            pwm0 -= 100;
-//            pwm1 -= 100;
-//            pwm2 -= 100;
-//            pwm3 -= 100;
-//        }
-
-
-
+        bool _armed;
+        atomic_read(&armed, &_armed, sizeof(bool));
+        if(!_armed) {
+            pwm0 = 0;
+            pwm1 = 0;
+            pwm2 = 0;
+            pwm3 = 0;
+        }
+        /*
+         *         Front
+         *
+         *  (PWM0)       (PWM1)
+         *      O          O
+         *       \        /
+         *        +------+
+         *        |  /\  |
+         *        |  ||  |
+         *        +------+
+         *       /        \
+         *      O          O
+         *  (PWM2)       (PWM3)
+         *
+         *          Back
+         */
 
         //===============================
         //DEBUG
@@ -583,10 +530,36 @@ void task_ahrs_pid(void) {
  *
  * */
 void task_receive_input(void) {
+    uint8_t channel = 1;
+    uint8_t *addr  = (uint8_t[]){0x11,0x22,0x33,0x44,0x55};
+    NRF_Packet pack;
+    Vec3f set;
+
+    nrfSetRxMode(channel, addr);
+
     for(;;) {
         sleep(200);
+        lock(mutex_bus_spi);
+        nrfQuickRxMode();
+        nrfReadRxPayload((uint8_t*)&pack);
+
+        //process joystick input and  translate to setpoint
+        // axes in range [127,-128] (i8)
+        /*
+         *          LEFT                       RIGHT
+         *
+         *        Throttle+                    Pitch-
+         *           ^                           ^
+         *           |                           |
+         * Yaw-  < --O-- > Yaw +       Roll- < --O-- > Roll+
+         *           |                           |
+         *           v                           v
+         *        Throttle-                    Pitch+
+         */
 
 
+
+        atomic_write(&attitude, &set, sizeof(Vec3f));
     }
 }
 
@@ -598,8 +571,13 @@ void task_receive_input(void) {
  *
  * */
 void task_send_telem(void) {
+    uint8_t channel = 1;
+    uint8_t *addr  = (uint8_t[]){0x11,0x22,0x33,0x44,0x55};
+
     for(;;) {
         sleep(1000);
+        lock(mutex_bus_spi);
+        nrfSetTxMode(channel, addr);
 
     }
 }

@@ -40,6 +40,7 @@ void readI2c1Registers(uint8_t add, uint8_t reg, uint8_t data[], uint8_t size);
 // General functions
 bool pollI2c1Address(uint8_t add);
 bool isI2c1Error(void);
+void handle_error(void);
 
 #endif
 

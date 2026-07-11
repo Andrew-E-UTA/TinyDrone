@@ -53,8 +53,7 @@ int main(void)
     initHeap();
 
     // Initialize mutexes and semaphores
-    ok &= initMutex(mutex_bus_i2c1);
-    ok &= initMutex(mutex_bus_spi1);
+    ok &= initMutex(mutex_bus_spi);
 
     ok &= initSemaphore(semaphore_mpu_data_ready, 0);
 

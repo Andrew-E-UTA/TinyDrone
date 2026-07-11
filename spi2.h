@@ -1,5 +1,5 @@
-// SPI1 library
-// Jason Losh
+// spi2.h
+// Andrew Espinoza
 
 //-----------------------------------------------------------------------------
 // Hardware Target
@@ -7,33 +7,33 @@
 
 // Target Platform: EK-TM4C123GXL
 // Target uC:       TM4C123GH6PM
-// System Clock:    -
+// System Clock:    80 Mhz
 
 // Hardware configuration:
-// SPI1 Interface:
-//   MOSI on PD3 (SSI1Tx)
-//   MISO on PD2 (SSI1Rx)
-//   ~CS on PD1  (SSI1Fss)
-//   SCLK on PD0 (SSI1Clk)
+// SPI2 Interface:
+//   SCLK on PB4 (SSI2Clk)
+//   ~CS  on PB5 (SSI2Fss)
+//   MISO on PB6 (SSI2Rx)
+//   MOSI on PB7 (SSI2Tx)
 
 //-----------------------------------------------------------------------------
 // Device includes, defines, and assembler directives
 //-----------------------------------------------------------------------------
 
-#ifndef SPI1_H_
-#define SPI1_H_
+#ifndef SPI2_H_
+#define SPI2_H_
 
-#define USE_SSI_FSS 1		// do we want the fss, either software or hardware controlled
-#define USE_SSI_RX  2		// spi receive or not receieve
+#define USE_SS2_FSS 1		// do we want the fss, either software or hardware controlled
+#define USE_SS2_RX  2		// spi receive or not receieve
 
 //-----------------------------------------------------------------------------
 // Subroutines
 //-----------------------------------------------------------------------------
 
-void initSpi1(uint32_t pinMask);
-void setSpi1BaudRate(uint32_t clockRate, uint32_t fcyc);
-void setSpi1Mode(uint8_t polarity, uint8_t phase);
-void writeSpi1Data(uint32_t data);
-uint32_t readSpi1Data();
+void initSpi2(uint32_t pinMask);
+void setSpi2BaudRate(uint32_t clockRate, uint32_t fcyc);
+void setSpi2Mode(uint8_t polarity, uint8_t phase);
+void writeSpi2Data(uint32_t data);
+uint32_t readSpi2Data();
 
 #endif

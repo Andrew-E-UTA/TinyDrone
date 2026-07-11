@@ -1,9 +1,15 @@
+// nrf24l01.c
+//Andrew Espinoza
+
+//-----------------------------------------------------------------------------
+// Hardware Target
+//-----------------------------------------------------------------------------
 // Target Platform: EK-TM4C123GXL w/ nRF24L01+
 // Target uC:       TM4C123GH6PM
-// System Clock:    40 MHz
+// System Clock:    80 MHz
 
 // Hardware configuration:
-// nRF24L01+ Wireless Transceiver Module on SPI1
+// nRF24L01+ Wireless Transceiver Module on Spi2
 //   MOSI (SSI0Tx)  on PD3
 //   MISO (SSI0Rx)  on PD2
 //   SCLK (SSI0Clk) on PD0
@@ -21,16 +27,14 @@
 #include "wait.h"
 #include "gpio.h"
 #include "nvic.h"
-#include "spi1.h"
+#include "Spi2.h"
 #include "uart0.h"
 #include "nrf24l01.h"
 
-
 // Pins
-#define CSN PORTD,1
-#define CE  PORTE,3
-#define NRF24l01_INT    PORTB, 5
-
+#define CE              PORTA,2
+#define CSN             PORTA,3
+#define NRF24l01_INT    PORTA,4
 
 //-----------------------------------------------------------------------------
 // Global variables
@@ -78,10 +82,10 @@ uint8_t nrfReadReg(uint8_t reg)
 {
     uint8_t data;
     nrfCsnEnable();
-    writeSpi1Data(READ_REG | (reg & 0x1F));
-    readSpi1Data();
-    writeSpi1Data(0);
-    data = readSpi1Data();
+    writeSpi2Data(READ_REG | (reg & 0x1F));
+    readSpi2Data();
+    writeSpi2Data(0);
+    data = readSpi2Data();
     nrfCsnDisable();
     return data;
 }
@@ -90,10 +94,10 @@ uint8_t nrfReadReg(uint8_t reg)
 void nrfWriteReg(uint8_t reg, uint8_t data)
 {
     nrfCsnEnable();
-    writeSpi1Data(WRITE_REG | (reg & 0x1F));
-    readSpi1Data();
-    writeSpi1Data(data);
-    readSpi1Data();
+    writeSpi2Data(WRITE_REG | (reg & 0x1F));
+    readSpi2Data();
+    writeSpi2Data(data);
+    readSpi2Data();
     nrfCsnDisable();
 }
 
@@ -101,11 +105,11 @@ void nrfWriteReg(uint8_t reg, uint8_t data)
 void nrfWriteRegMultBytes(uint8_t reg, uint8_t *data, uint8_t size) {
     uint8_t i;
     nrfCsnEnable();
-    writeSpi1Data(WRITE_REG | (reg & 0x1F));
-    readSpi1Data();
+    writeSpi2Data(WRITE_REG | (reg & 0x1F));
+    readSpi2Data();
     for(i = 0; i < size; i++) {
-        writeSpi1Data(data[i]);
-        readSpi1Data();
+        writeSpi2Data(data[i]);
+        readSpi2Data();
     }
     nrfCsnDisable();
 }
@@ -114,11 +118,11 @@ void nrfWriteRegMultBytes(uint8_t reg, uint8_t *data, uint8_t size) {
 void nrfReadRegMultBytes(uint8_t reg, uint8_t *data, uint8_t size) {
     uint8_t i;
     nrfCsnEnable();
-    writeSpi1Data(READ_REG | (reg & 0x1F));
-    readSpi1Data();
+    writeSpi2Data(READ_REG | (reg & 0x1F));
+    readSpi2Data();
     for(i = 0; i < size; i++) {
-        writeSpi1Data(0);
-        data[i] = readSpi1Data();
+        writeSpi2Data(0);
+        data[i] = readSpi2Data();
     }
     nrfCsnDisable();
 }
@@ -126,10 +130,10 @@ void nrfReadRegMultBytes(uint8_t reg, uint8_t *data, uint8_t size) {
 // Write stand alone SPI commands
 void nrfWriteCommand(uint8_t command) {
     nrfCsnEnable();
-    writeSpi1Data(command);
-    readSpi1Data();
-    writeSpi1Data(0);
-    readSpi1Data();
+    writeSpi2Data(command);
+    readSpi2Data();
+    writeSpi2Data(0);
+    readSpi2Data();
     nrfCsnDisable();
 }
 
@@ -137,11 +141,11 @@ void nrfWriteCommand(uint8_t command) {
 void nrfWriteTxPayload(uint8_t *data) {
     uint8_t i;
     nrfCsnEnable();
-    writeSpi1Data(W_TX_PYLD);               // SPI command to write Tx FIFO
-    readSpi1Data();
+    writeSpi2Data(W_TX_PYLD);               // SPI command to write Tx FIFO
+    readSpi2Data();
     for(i = 0; i < MAX_PAY_LEN; i++) {      // Write payload (32-bytes max)
-        writeSpi1Data(data[i]);
-        readSpi1Data();
+        writeSpi2Data(data[i]);
+        readSpi2Data();
     }
     nrfCsnDisable();
 }
@@ -150,11 +154,11 @@ void nrfWriteTxPayload(uint8_t *data) {
 void nrfReadRxPayload(uint8_t *data) {
     uint8_t i;
     nrfCsnEnable();
-    writeSpi1Data(R_RX_PYLD);               // SPI command to read Rx FIFO
-    readSpi1Data();
+    writeSpi2Data(R_RX_PYLD);               // SPI command to read Rx FIFO
+    readSpi2Data();
     for(i = 0; i < MAX_PAY_LEN; i++) {      // Read payload (32-bytes max)
-        writeSpi1Data(0);
-        data[i] = readSpi1Data();
+        writeSpi2Data(0);
+        data[i] = readSpi2Data();
     }
     nrfCsnDisable();
 

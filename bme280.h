@@ -83,15 +83,30 @@
 #define DEVICE_ADD          0x76
 #define CHIP_ID             0x60
 
+
+// Calibration Parameters
+typedef struct {
+    uint16_t digT1;
+    int16_t digT2, digT3;
+
+    uint16_t digP1;
+    int16_t digP2, digP3, digP4, digP5, digP6, digP7, digP8, digP9;
+
+    uint8_t digH1, digH3;
+    int16_t digH2, digH4, digH5;
+    int8_t digH6;
+} BmeCalibrationParams;
+
 //-----------------------------------------------------------------------------
 // Subroutines
 //-----------------------------------------------------------------------------
 
-void getCalibrationParameters();
-void initBme280();
-uint32_t compensatePres(int32_t presAdc);
-int32_t compensateTemp(int32_t tempAdc);
-uint32_t compensateHum(int32_t humAdc);
-void getBmeData(float *tempC, float *pres, float *hum);
+BmeCalibrationParams getCalibrationParameters();
+BmeCalibrationParams initBme280();
+static float getTFine(int32_t tempAdc, const BmeCalibrationParams *params);
+static float compensatePres(int32_t presAdc, float t_fine, const BmeCalibrationParams *params);
+static float compensateTemp(float t_fine);
+static float compensateHum(int32_t humAdc, float t_fine, const BmeCalibrationParams *params);
+void getBmeData(float *tempC, float *pres, float *hum, BmeCalibrationParams *params);
 
 #endif
