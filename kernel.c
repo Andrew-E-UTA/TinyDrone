@@ -216,7 +216,7 @@ bool createThread(_fn fn, const char name[], uint8_t priority, uint32_t stackByt
     if(!(stackPtr = (uint32_t*)mallocHeap(stackBytes))) return false;
     addSramAccessWindow((uint64_t*)tcb[i].srd, stackPtr, stackBytes);
     tcb[i].size = stackBytes;
-    tcb[i].sp = stackPtr + stackBytes/4;
+    tcb[i].sp = stackPtr + stackBytes/4;    //ptr is typ i32 : div by 4 to match
     strcpy(tcb[i].name, name);
 
     _setupStack(taskCurrent);

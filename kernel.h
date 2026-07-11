@@ -42,7 +42,7 @@ typedef void (*_fn)();
 #define semaphore_mpu_data_ready    0
 
 // tasks
-#define MAX_TASKS 12
+#define MAX_TASKS 6
 
 //-----------------------------------------------------------------------------
 // Subroutines

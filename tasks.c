@@ -66,6 +66,8 @@
 #include "qmc5883p.h"
 #include "bme280.h"
 
+#define DEBUG_SERIAL_PRINTING 0
+
 #define NRF24L01_CE     PORTA,2
 #define NRF24L01_CSN    PORTA,3
 #define NRF24L01_INT    PORTA,4
@@ -74,7 +76,6 @@
 
 #define RED_LED         PORTF,1
 #define BLUE_LED        PORTF,2
-
 
 #define PIN_0           0x01
 #define PIN_1           0x02
@@ -105,7 +106,17 @@ typedef struct {
 } NRF_Packet;
 
 Vec3f attitude = {.x=0, .y=0, .z=0};
-bool armed = false;
+bool armed = true;
+
+#define ARM_STATE_UNARMED   0
+#define ARM_STATE_ARMING    1
+#define ARM_STATE_ARMED     2
+
+//Number packets to receive while joystick is in a held postion for state transition before changing state
+//Because packets are received at 1Hz, this count roughly maps to seconds held
+#define ARMING_DEBOUNCE 3
+#define ARMED_DEBOUNCE 2
+#define UNARMED_DEBOUNCE 10
 
 //-----------------------------------------------------------------------------
 // Subroutines
@@ -119,7 +130,7 @@ void gpioBIsr(void) {
 
 void gpioEIsr(void) {
     if(isPinInterrupt(MPU6050_INT)) {
-        _postSemaphore(semaphore_mpu_data_ready);
+        if(armed) _postSemaphore(semaphore_mpu_data_ready);
 
 //        readI2c1Register(MPU6050_ADDR, MPU6050_INT_STATUS_R); //clear int for mpu
         clearPinInterrupt(MPU6050_INT);
@@ -230,7 +241,7 @@ Vec3f correct(Vec3f raw, float A[3][3], float b[3]) {
 Vec3f sliding_window(Vec3f window[], Vec3f new_data, uint8_t size, uint8_t *window_idx) {
     window[((*window_idx)++) & (size-1)] = new_data;
     uint8_t i;
-    Vec3f v = {};
+    Vec3f v = {0};
     for(i = 0; i < size; ++i) {
         v.x += window[i].x;
         v.y += window[i].y;
@@ -376,6 +387,98 @@ float pid_update(PidController *pid, float setpoint, float current, float dt) {
     return clampf(p + i + d, pid->min, pid->max);
 }
 
+float getSetpoint(int8_t joystick) {
+    return (((float)joystick + 127.0) * 12.0 + 8.0) / 17.0 - 90.0;
+}
+
+void arm_seq_update(uint8_t *arming_state, uint8_t *debounce, const NRF_Packet *pack) {
+    switch(*arming_state) {
+    //Wait for joystick to go to down position for x debounce counts
+    case ARM_STATE_UNARMED: {
+        // needs to be in down position continuously to advance state
+        if(pack->ry == -127) *debounce++;
+        else *debounce = 0;
+
+        //Once reached -> advance state ; else stay
+        if(*debounce == ARMING_DEBOUNCE) {*arming_state = ARM_STATE_ARMING; *debounce = 0; }
+        else *arming_state = ARM_STATE_UNARMED;
+    } break;
+    //Wait for joystick to go to above resting position for y debounce counts
+    case ARM_STATE_ARMING: {
+        // needs to be in up position continuously to advance state
+        if(pack->ry > 0) *debounce++;
+        else *debounce = 0;
+
+        //Once reached -> advance state ; else stay
+        if(*debounce == ARMED_DEBOUNCE) {*arming_state = ARM_STATE_ARMED; *debounce = 0; }
+        else *arming_state = ARM_STATE_ARMING;
+    } break;
+    //Wait for joystick to be at rest for z debounce counts
+    case ARM_STATE_ARMED: {
+        // needs to be in middle(0) position continuously to advance state
+        if(pack->ry == -127) *debounce++;
+        else *debounce = 0;
+
+        //Once reached -> advance state ; else stay
+        if(*debounce == UNARMED_DEBOUNCE) {*arming_state = ARM_STATE_UNARMED; *debounce = 0; }
+        else *arming_state = ARM_STATE_ARMED;
+    } break;
+    default: { *arming_state = ARM_STATE_UNARMED; }
+    }
+}
+
+#define CORRECTION_GAIN  1.0f
+void calculate_pwms_from_corrections(uint16_t *pwm0, uint16_t *pwm1, uint16_t *pwm2, uint16_t *pwm3,
+                                     float pitch_correction, float roll_correction, float yaw_correction, float throttle) {
+    float adj_p = pitch_correction * CORRECTION_GAIN;
+    float adj_r = roll_correction  * CORRECTION_GAIN;
+    float adj_y = yaw_correction   * CORRECTION_GAIN;
+
+    // Base throttle (ensure within [0, 1023])
+    float base = clampf(throttle, 0, 1023);
+
+    // Motor mixing:
+    /*
+    *         Front
+    *
+    *  (PWM0)        (PWM1)
+    *      O          O
+    *       \        /
+    *        +------+
+    *        |  /\  |
+    *        |  ||  |
+    *        +------+
+    *       /        \
+    *      O          O
+    *  (PWM2)        (PWM3)
+    *
+    *          Back
+    *
+    *          LEFT                       RIGHT
+    *
+    *        Throttle+                    Pitch-
+    *           ^                           ^
+    *           |                           |
+    * Yaw-  < --O-- > Yaw +       Roll- < --O-- > Roll+
+    *           |                           |
+    *           v                           v
+    *        Throttle-                    Pitch+
+    */
+    float p0 = base + adj_p + adj_r + adj_y;
+    float p1 = base + adj_p - adj_r - adj_y;
+    float p2 = base - adj_p + adj_r - adj_y;
+    float p3 = base - adj_p - adj_r + adj_y;
+
+    *pwm0 = (uint16_t) clampf(p0, 0, 1023);
+    *pwm1 = (uint16_t) clampf(p1, 0, 1023);
+    *pwm2 = (uint16_t) clampf(p2, 0, 1023);
+    *pwm3 = (uint16_t) clampf(p3, 0, 1023);
+}
+
+void apply_pwms(uint8_t pwm0, uint8_t pwm1, uint8_t pwm2, uint8_t pwm3) {
+    //TBD after choosing pwm pins
+}
+
 /* ============================================================================
  *  ESTIMATE ATTITUDE   (1kHz)          (Priority: 0)
  * ============================================================================
@@ -400,6 +503,7 @@ float pid_update(PidController *pid, float setpoint, float current, float dt) {
 #define RAD2DEG     180.0/PI
 #define WINDOW_SIZE 4
 void task_ahrs_pid(void) {
+    //Variables defined before main loop are inherently 'static'
     float mag_A[3][3]   =  {{0.00861610, 0.00195565, 0.00083649},
                            {0.00195565, 10.99483483, -0.22468925},
                            {0.00083649, -0.22468925, 10.5611354}};
@@ -409,9 +513,9 @@ void task_ahrs_pid(void) {
                            {-0.00102880, 0.00102497, 0.98906820}};
     float accel_b[3]    =  {0.02526037, 0.00277766, 0.01647459};
     Vec3f g_ofs = gyroOffsets();
-    Vec3f window_a[WINDOW_SIZE] = {};
-    Vec3f window_g[WINDOW_SIZE] = {};
-    Vec3f window_m[WINDOW_SIZE] = {};
+    Vec3f window_a[WINDOW_SIZE] = {0};
+    Vec3f window_g[WINDOW_SIZE] = {0};
+    Vec3f window_m[WINDOW_SIZE] = {0};
     uint8_t idx_a = 0, idx_g = 0, idx_m = 0;
     float dt_marg_s = 0.0f;
     Quaternion q_est = {1.0f, 0.0f, 0.0f, 0.0f};
@@ -430,7 +534,7 @@ void task_ahrs_pid(void) {
                                .integral=0, .prev_diff=0,
                                .min=-20, .max=20
     };
-    float pwm0 = 0.0f, pwm1 = 0.0f, pwm2 = 0.0f, pwm3 = 0.0f;
+    uint16_t pwm0 = 0.0f, pwm1 = 0.0f, pwm2 = 0.0f, pwm3 = 0.0f;
 
     for(;;) {
         wait(semaphore_mpu_data_ready);
@@ -440,7 +544,7 @@ void task_ahrs_pid(void) {
         MpuData mpu = mpu_read();
         Vec3f accel = (Vec3f){mpu.a.x, mpu.a.y, mpu.a.z};
         Vec3f gyro  = (Vec3f){mpu.g.x - g_ofs.x, mpu.g.y - g_ofs.y, -(mpu.g.z - g_ofs.z)};
-        Vec3f mag;
+        Vec3f mag = {0};
         accel = correct(accel, accel_A, accel_b);
         accel = sliding_window(window_a, accel, WINDOW_SIZE, &idx_a);
         gyro  = sliding_window(window_g, gyro, WINDOW_SIZE, &idx_g);
@@ -455,7 +559,7 @@ void task_ahrs_pid(void) {
             mag = sliding_window(window_m, mag, WINDOW_SIZE, &idx_m);
         }
 
-        Vec3f euler;
+        Vec3f euler = {0};
         float dt_s = deltaSeconds();
         dt_marg_s += dt_s;
         //Run the Full 9DOF MARG AHRS Update
@@ -471,13 +575,18 @@ void task_ahrs_pid(void) {
             //dt_s 'auto' zeros after function scope ends
         }
 
-        Vec3f setpoint;
+        if(DEBUG_SERIAL_PRINTING){//Debug printing for serial viewing
+            char buffer[100];
+            usprintf(buffer, "%f,%f,%f\n", euler.x, euler.y, euler.z);
+            putsUart0(buffer);
+        }
+
+        Vec3f setpoint = {0};
         atomic_read(&attitude, &setpoint, sizeof(Vec3f));
         float pitch_correction = pid_update(&pitch_pid, setpoint.x, euler.x, dt_s);
         float roll_correction = pid_update(&roll_pid, setpoint.y, euler.y, dt_s);
         float yaw_correction = pid_update(&yaw_pid, setpoint.z, euler.z, dt_s);
 
-        //SET PWM (NOT FINISHED OR being used yet)
         bool _armed;
         atomic_read(&armed, &_armed, sizeof(bool));
         if(!_armed) {
@@ -486,35 +595,10 @@ void task_ahrs_pid(void) {
             pwm2 = 0;
             pwm3 = 0;
         }
-        /*
-         *         Front
-         *
-         *  (PWM0)       (PWM1)
-         *      O          O
-         *       \        /
-         *        +------+
-         *        |  /\  |
-         *        |  ||  |
-         *        +------+
-         *       /        \
-         *      O          O
-         *  (PWM2)       (PWM3)
-         *
-         *          Back
-         */
-
-        //===============================
-        //DEBUG
-        //===============================
-        {
-            char buffer[100];
-            usprintf(buffer, "%f,%f,%f\n", euler.x, euler.y, euler.z);
-            putsUart0(buffer);
+        else {
+            calculate_pwms_from_corrections(&pwm0, &pwm1, &pwm2, &pwm3, pitch_correction, roll_correction, yaw_correction, 0);
         }
-        //===============================
-        //DEBUG
-        //===============================
-
+        apply_pwms(pwm0, pwm1, pwm2, pwm3);
     }//END FOR LOOP
 }//END TASK
 
@@ -530,10 +614,11 @@ void task_ahrs_pid(void) {
  *
  * */
 void task_receive_input(void) {
+    //Variables defined before main loop are inherently 'static'
     uint8_t channel = 1;
     uint8_t *addr  = (uint8_t[]){0x11,0x22,0x33,0x44,0x55};
-    NRF_Packet pack;
-    Vec3f set;
+    NRF_Packet pack = {0};
+    uint8_t arming_state = ARM_STATE_UNARMED, debounce_count = 0;
 
     nrfSetRxMode(channel, addr);
 
@@ -543,23 +628,24 @@ void task_receive_input(void) {
         nrfQuickRxMode();
         nrfReadRxPayload((uint8_t*)&pack);
 
-        //process joystick input and  translate to setpoint
-        // axes in range [127,-128] (i8)
-        /*
-         *          LEFT                       RIGHT
-         *
-         *        Throttle+                    Pitch-
-         *           ^                           ^
-         *           |                           |
-         * Yaw-  < --O-- > Yaw +       Roll- < --O-- > Roll+
-         *           |                           |
-         *           v                           v
-         *        Throttle-                    Pitch+
-         */
+        //handle arming
+        Vec3f set = {0};
+        arm_seq_update(&arming_state, &debounce_count, &pack);
+        if (arming_state == ARM_STATE_ARMED)
+            atomic_write(&armed, (bool[]){true}, sizeof(bool));
+        else  {
+            atomic_write(&armed, (bool[]){false}, sizeof(bool));
+            atomic_write(&attitude, &set, sizeof(Vec3f));
+            unlock(mutex_bus_spi);
+            continue;
+        }
 
-
-
+        //Convert joystick positions to rotational degree setpoints
+        set.x = getSetpoint(-pack.ry);  //pitch
+        set.y = getSetpoint(pack.rx);   //roll
+        set.z = getSetpoint(pack.lx);   //yaw
         atomic_write(&attitude, &set, sizeof(Vec3f));
+        unlock(mutex_bus_spi);
     }
 }
 
@@ -571,6 +657,7 @@ void task_receive_input(void) {
  *
  * */
 void task_send_telem(void) {
+    //Variables defined before main loop are inherently 'static'
     uint8_t channel = 1;
     uint8_t *addr  = (uint8_t[]){0x11,0x22,0x33,0x44,0x55};
 
@@ -579,6 +666,7 @@ void task_send_telem(void) {
         lock(mutex_bus_spi);
         nrfSetTxMode(channel, addr);
 
+        unlock(mutex_bus_spi);
     }
 }
 
