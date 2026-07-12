@@ -71,21 +71,24 @@
 #define NRF24L01_CE     PORTA,2
 #define NRF24L01_CSN    PORTA,3
 #define NRF24L01_INT    PORTA,4
+//#define I2C1SCL PORTA,6
+//#define I2C1SDA PORTA,7
+
+//#define SSI2CLK PORTB,4     // Clock
+//#define SSI2FSS PORTB,5     // Frame/chip select
+//#define SSI2RX  PORTB,6     // Receive
+//#define SSI2TX  PORTB,7     // Transmit
+
+#define MOTOR_FRONT_LEFT    PORTC,4 //M0PWM6 : M0 PWM3 GENA
+#define MOTOR_FRONT_RIGHT   PORTC,5 //M0PWM7 : M0 PWM3 GENB
+#define MOTOR_BACK_LEFT     PORTD,0 //M1PWM0 : M0 PWM0 GENA
+#define MOTOR_BACK_RIGHT    PORTD,1 //M1PWM1 : M0 PWM0 GENB
 
 #define MPU6050_INT     PORTE,4
 
 #define RED_LED         PORTF,1
 #define BLUE_LED        PORTF,2
-
-#define PIN_0           0x01
-#define PIN_1           0x02
-#define PIN_2           0x04
-#define PIN_3           0x08
-#define PIN_4           0x10
-#define PIN_5           0x20
-#define PIN_6           0x40
-#define PIN_7           0x80
-
+//#define HEARTBEAT PORTF,3
 
 //Drone Specific Types
 typedef struct { float pitch, roll, yaw; } Attitude;
@@ -106,7 +109,7 @@ typedef struct {
 } NRF_Packet;
 
 Vec3f attitude = {.x=0, .y=0, .z=0};
-bool armed = true;
+bool armed = false;
 
 #define ARM_STATE_UNARMED   0
 #define ARM_STATE_ARMING    1
@@ -184,6 +187,44 @@ void initTaskHw(void) {
     WTIMER3_CTL_R  |= TIMER_CTL_TBEN;
 
     //PWM (Motors)
+    //MOTOR_FRONT_LEFT    PC4 M0PWM6 : M0 PWM3 GENA
+    //MOTOR_FRONT_RIGHT   PC5 M0PWM7 : M0 PWM3 GENB
+    //MOTOR_BACK_LEFT     PD0 M1PWM0 : M0 PWM0 GENA
+    //MOTOR_BACK_RIGHT    PD1 M1PWM1 : M0 PWM0 GENB
+
+    SYSCTL_RCGCPWM_R |= SYSCTL_RCGCPWM_R0 | SYSCTL_RCGCPWM_R1;
+    _delay_cycles(3);
+
+    //Reset
+    SYSCTL_SRPWM_R = SYSCTL_SRPWM_R1 | SYSCTL_SRPWM_R0;
+    SYSCTL_SRPWM_R = 0;
+
+    //Turn off
+    PWM0_3_CTL_R = 0;
+    PWM1_0_CTL_R = 0;
+
+    //Configure
+    PWM0_3_GENA_R = PWM_3_GENA_ACTCMPAD_ONE | PWM_3_GENA_ACTLOAD_ZERO;
+    PWM0_3_GENB_R = PWM_3_GENB_ACTCMPBD_ONE | PWM_3_GENB_ACTLOAD_ZERO;
+
+    PWM1_0_GENA_R = PWM_0_GENA_ACTCMPAD_ONE | PWM_0_GENA_ACTLOAD_ZERO;
+    PWM1_0_GENB_R = PWM_0_GENB_ACTCMPBD_ONE | PWM_0_GENB_ACTLOAD_ZERO;
+
+    PWM0_3_LOAD_R = 1023;
+    PWM1_0_LOAD_R = 1023;
+
+    PWM0_3_CMPA_R = 0;
+    PWM0_3_CMPB_R = 0;
+    PWM1_0_CMPA_R = 0;
+    PWM1_0_CMPB_R = 0;
+
+    //Turn on Generators
+    PWM0_3_CTL_R = PWM_0_CTL_ENABLE;
+    PWM1_0_CTL_R = PWM_1_CTL_ENABLE;
+
+    //Enable Outputs
+    PWM0_ENABLE_R |= PWM_ENABLE_PWM3EN;
+    PWM1_ENABLE_R |= PWM_ENABLE_PWM0EN;
 
     //MODULES
     mpu_init();
@@ -391,12 +432,33 @@ float getSetpoint(int8_t joystick) {
     return (((float)joystick + 127.0) * 12.0 + 8.0) / 17.0 - 90.0;
 }
 
+NRF_Packet fake_arming_and_keep(uint8_t *state, uint8_t *count) {
+    NRF_Packet pkt = {0};
+
+    switch (*state) {
+    case ARM_STATE_UNARMED: {
+        pkt.ly = -127;
+        (*count)++;
+        if (*count >= ARMING_DEBOUNCE) { *state = ARM_STATE_ARMING; *count = 0; }
+    } break;
+    case ARM_STATE_ARMING: {
+        pkt.ly = 10;
+        (*count)++;
+        if (*count >= ARMED_DEBOUNCE) { *state = ARM_STATE_ARMED; *count = 0; }
+    } break;
+    case ARM_STATE_ARMED: {
+        pkt.ly = 0;
+    } break;
+    }
+    return pkt;
+}
+
 void arm_seq_update(uint8_t *arming_state, uint8_t *debounce, const NRF_Packet *pack) {
     switch(*arming_state) {
     //Wait for joystick to go to down position for x debounce counts
     case ARM_STATE_UNARMED: {
         // needs to be in down position continuously to advance state
-        if(pack->ry == -127) *debounce++;
+        if(pack->ly == -127) *debounce++;
         else *debounce = 0;
 
         //Once reached -> advance state ; else stay
@@ -406,7 +468,7 @@ void arm_seq_update(uint8_t *arming_state, uint8_t *debounce, const NRF_Packet *
     //Wait for joystick to go to above resting position for y debounce counts
     case ARM_STATE_ARMING: {
         // needs to be in up position continuously to advance state
-        if(pack->ry > 0) *debounce++;
+        if(pack->ly > 0) *debounce++;
         else *debounce = 0;
 
         //Once reached -> advance state ; else stay
@@ -416,7 +478,7 @@ void arm_seq_update(uint8_t *arming_state, uint8_t *debounce, const NRF_Packet *
     //Wait for joystick to be at rest for z debounce counts
     case ARM_STATE_ARMED: {
         // needs to be in middle(0) position continuously to advance state
-        if(pack->ry == -127) *debounce++;
+        if(pack->ly == -127) *debounce++;
         else *debounce = 0;
 
         //Once reached -> advance state ; else stay
@@ -426,6 +488,7 @@ void arm_seq_update(uint8_t *arming_state, uint8_t *debounce, const NRF_Packet *
     default: { *arming_state = ARM_STATE_UNARMED; }
     }
 }
+
 
 #define CORRECTION_GAIN  1.0f
 void calculate_pwms_from_corrections(uint16_t *pwm0, uint16_t *pwm1, uint16_t *pwm2, uint16_t *pwm3,
@@ -476,7 +539,14 @@ void calculate_pwms_from_corrections(uint16_t *pwm0, uint16_t *pwm1, uint16_t *p
 }
 
 void apply_pwms(uint8_t pwm0, uint8_t pwm1, uint8_t pwm2, uint8_t pwm3) {
-    //TBD after choosing pwm pins
+    //MOTOR_FRONT_LEFT    PC4 M0PWM6 : M0 PWM3 GENA
+    //MOTOR_FRONT_RIGHT   PC5 M0PWM7 : M0 PWM3 GENB
+    //MOTOR_BACK_LEFT     PD0 M1PWM0 : M0 PWM0 GENA
+    //MOTOR_BACK_RIGHT    PD1 M1PWM1 : M0 PWM0 GENB
+    PWM0_3_CMPA_R = pwm0;
+    PWM0_3_CMPB_R = pwm1;
+    PWM1_0_CMPA_R = pwm2;
+    PWM1_0_CMPB_R = pwm3;
 }
 
 /* ============================================================================
@@ -589,15 +659,8 @@ void task_ahrs_pid(void) {
 
         bool _armed;
         atomic_read(&armed, &_armed, sizeof(bool));
-        if(!_armed) {
-            pwm0 = 0;
-            pwm1 = 0;
-            pwm2 = 0;
-            pwm3 = 0;
-        }
-        else {
-            calculate_pwms_from_corrections(&pwm0, &pwm1, &pwm2, &pwm3, pitch_correction, roll_correction, yaw_correction, 0);
-        }
+        if(!_armed) pwm0 = pwm1 = pwm2 = pwm3 = 0;
+        else calculate_pwms_from_corrections(&pwm0, &pwm1, &pwm2, &pwm3, pitch_correction, roll_correction, yaw_correction, 0);
         apply_pwms(pwm0, pwm1, pwm2, pwm3);
     }//END FOR LOOP
 }//END TASK
@@ -618,15 +681,19 @@ void task_receive_input(void) {
     uint8_t channel = 1;
     uint8_t *addr  = (uint8_t[]){0x11,0x22,0x33,0x44,0x55};
     NRF_Packet pack = {0};
-    uint8_t arming_state = ARM_STATE_ARMED, debounce_count = 0;
+    uint8_t arming_state = ARM_STATE_UNARMED, debounce_count = 0;
 
     nrfSetRxMode(channel, addr);
+
+
+    uint8_t fake_payload_state = ARM_STATE_UNARMED, fake_count = 0;
 
     for(;;) {
         sleep(200);
         lock(mutex_bus_spi);
         nrfQuickRxMode();
-        nrfReadRxPayload((uint8_t*)&pack);
+//        nrfReadRxPayload((uint8_t*)&pack);
+        pack = fake_arming_and_keep(&fake_payload_state, &fake_count);
 
         //handle arming
         Vec3f set = {0};

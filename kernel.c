@@ -284,7 +284,7 @@ void svCallIsr(void) {
         bytecpy((void*)*getPsp(), (void*)*(getPsp()+1), *(getPsp()+2));
     }break;
     case(SVC_ATOMIC_WRITE): {
-        bytecpy((void*)*(getPsp()+1), (void*)*getPsp(), *(getPsp()+2));
+        bytecpy((void*)*getPsp(), (void*)*(getPsp()+1), *(getPsp()+2));
     }break;
     case(SVC_KILL): {
         uint32_t pid = *getPsp();

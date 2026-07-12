@@ -30,7 +30,6 @@ extern uint8_t getTaskCurrent();
 extern uint64_t* getCurrentSrd();
 
 #define NUM_SR  40
-#define MAX_TASKS 12
 
 #define SMALL   5
 #define LARGE   10

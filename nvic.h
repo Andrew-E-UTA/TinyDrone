@@ -20,6 +20,15 @@
 
 #include <stdint.h>
 
+#define PIN_0           0x01
+#define PIN_1           0x02
+#define PIN_2           0x04
+#define PIN_3           0x08
+#define PIN_4           0x10
+#define PIN_5           0x20
+#define PIN_6           0x40
+#define PIN_7           0x80
+
 //-----------------------------------------------------------------------------
 // Subroutines
 //-----------------------------------------------------------------------------
