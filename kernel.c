@@ -281,7 +281,7 @@ void svCallIsr(void) {
     case(SVC_POST):     { _postSemaphore(*getPsp());                 } break;
     case(SVC_REBOOT):   { NVIC_APINT_R = NVIC_APINT_VECTKEY | NVIC_APINT_SYSRESETREQ; }break;
     case(SVC_ATOMIC_READ): {
-        bytecpy((void*)*getPsp(), (void*)*(getPsp()+1), *(getPsp()+2));
+        bytecpy((void*)*(getPsp()+1), (void*)*getPsp(), *(getPsp()+2));
     }break;
     case(SVC_ATOMIC_WRITE): {
         bytecpy((void*)*getPsp(), (void*)*(getPsp()+1), *(getPsp()+2));

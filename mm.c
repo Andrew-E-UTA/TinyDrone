@@ -24,7 +24,7 @@
 
 uint64_t HeapFreeField = ~0;
 uint64_t HeapLockedField = 0x0000000180018180;
-HeapEntry HeapTable[12] = {};
+HeapEntry HeapTable[MAX_TASKS] = {};
 
 extern uint8_t getTaskCurrent();
 extern uint64_t* getCurrentSrd();

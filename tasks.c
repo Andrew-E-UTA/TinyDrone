@@ -90,7 +90,20 @@
 #define BLUE_LED        PORTF,2
 //#define HEARTBEAT PORTF,3
 
-//Drone Specific Types
+#define ARM_STATE_UNARMED   0
+#define ARM_STATE_ARMING    1
+#define ARM_STATE_ARMED     2
+
+//Number packets to receive while joystick is in a held postion for state transition before changing state
+//Because packets are received at 1Hz, this count roughly maps to seconds held
+#define ARMING_DEBOUNCE 5
+#define ARMED_DEBOUNCE 4
+#define UNARMED_DEBOUNCE 10
+
+//-----------------------------------------------------------------------------
+// Structs and Enums
+//-----------------------------------------------------------------------------
+
 typedef struct { float pitch, roll, yaw; } Attitude;
 typedef struct { float x, y, z; } MagData;
 typedef struct { float x, y, z; } BaroData;
@@ -108,22 +121,257 @@ typedef struct {
     uint8_t reserved[MAX_NRF_PACKET_SIZE - 5] ; //always 0
 } NRF_Packet;
 
-Vec3f attitude = {.x=0, .y=0, .z=0};
-bool armed = false;
-
-#define ARM_STATE_UNARMED   0
-#define ARM_STATE_ARMING    1
-#define ARM_STATE_ARMED     2
-
-//Number packets to receive while joystick is in a held postion for state transition before changing state
-//Because packets are received at 1Hz, this count roughly maps to seconds held
-#define ARMING_DEBOUNCE 3
-#define ARMED_DEBOUNCE 2
-#define UNARMED_DEBOUNCE 10
 
 //-----------------------------------------------------------------------------
-// Subroutines
+// Globals
 //-----------------------------------------------------------------------------
+
+Vec3f g_attitude = {.x=0, .y=0, .z=0};
+bool g_armed = false;
+uint8_t g_arming_state = ARM_STATE_UNARMED;
+
+//-----------------------------------------------------------------------------
+// (Private) Sub-Routine Prototypes
+//-----------------------------------------------------------------------------
+
+void gpioBIsr(void);
+void gpioEIsr(void);
+float minf(float a, float b);
+float maxf(float a, float b);
+float clampf(float x, float min, float max);
+float deltaSeconds(void);
+Vec3f gyroOffsets(void);
+Vec3f correct(Vec3f raw, float A[3][3], float b[3]);
+Vec3f sliding_window(Vec3f window[], Vec3f new_data, uint8_t size, uint8_t *window_idx);
+Vec3f MARG_AHRS_update(Quaternion *q_est, const Vec3f *a, const Vec3f *g, const Vec3f *m, float dt_s);
+Vec3f IMU_AHRS_update(Quaternion *q_est, const Vec3f *a, const Vec3f *g, float dt_s);
+float pid_update(PidController *pid, float setpoint, float current, float dt);
+float getSetpoint(int8_t joystick);
+NRF_Packet fake_arming_and_keep(uint8_t *state, uint8_t *count);
+void arm_seq_update(uint8_t *arming_state, uint8_t *debounce, const NRF_Packet *pack);
+void calculate_pwms_from_corrections(uint16_t *pwm0, uint16_t *pwm1, uint16_t *pwm2, uint16_t *pwm3, float pitch_correction, float roll_correction, float yaw_correction, float throttle);
+void apply_pwms(uint16_t pwm0, uint16_t pwm1, uint16_t pwm2, uint16_t pwm3);
+void send_sequence_pwms(uint8_t state);
+void MadgwickQuaternionUpdate(float q[4], float ax, float ay, float az, float gx, float gy, float gz, float mx, float my, float mz, float deltat);
+
+
+//-----------------------------------------------------------------------------
+// Tasks
+//-----------------------------------------------------------------------------
+
+
+/* ============================================================================
+ *  ESTIMATE ATTITUDE   (1kHz)          (Priority: 0)
+ * ============================================================================
+ *  Description: This process will read the sensors, update attitude, and run the pid loop for the motors
+ *
+ *  Control Flow:
+ *      Wait on Mpu data ready semaphore (yields to other tasks while waiting), that is posted by interrupt
+ *      reads mpu data
+ *      polls qmc data ready (no interrupt)
+ *      if qmc -> read qmc & marg ahrs
+ *      else -> imu_ahrs
+ *      pid update (with updated attitude and current setpoint)
+ *      send motor control
+ *
+ *  Notes:
+ *      no sleeping as the wait on data will provide the other tasks with time to run
+ *      the mpu thus governs the speed in which this task runs (mpu6050 set at 1khz datarate)
+ * */
+
+#define WINDOW_SIZE 4
+void task_ahrs_pid(void) {
+    //Variables defined before main loop are inherently 'static'
+    float mag_A[3][3]   =  {{0.00861610, 0.00195565, 0.00083649},
+                           {0.00195565, 10.99483483, -0.22468925},
+                           {0.00083649, -0.22468925, 10.5611354}};
+    float mag_b [3]     =  {178.46403898, -0.03880254, -0.03374748};
+    float accel_A[3][3] =  {{1.00550042, -0.00211106, -0.00102880},
+                           {-0.00211106, 1.00552839, 0.00102497},
+                           {-0.00102880, 0.00102497, 0.98906820}};
+    float accel_b[3]    =  {0.02526037, 0.00277766, 0.01647459};
+    Vec3f g_ofs = gyroOffsets();
+    Vec3f window_a[WINDOW_SIZE] = {0};
+    Vec3f window_g[WINDOW_SIZE] = {0};
+    Vec3f window_m[WINDOW_SIZE] = {0};
+    uint8_t idx_a = 0, idx_g = 0, idx_m = 0;
+    float dt_marg_s = 0.0f;
+    Quaternion q_est = {1.0f, 0.0f, 0.0f, 0.0f};
+    PidController pitch_pid = {
+                               .kp=.5, .ki=.5, .kd=.5,
+                               .integral=0, .prev_diff=0,
+                               .min=-20, .max=20
+    };
+    PidController roll_pid  = {
+                               .kp=.5, .ki=.5, .kd=.5,
+                               .integral=0, .prev_diff=0,
+                               .min=-20, .max=20
+    };
+    PidController yaw_pid   = {
+                               .kp=.5, .ki=.5, .kd=.5,
+                               .integral=0, .prev_diff=0,
+                               .min=-20, .max=20
+    };
+    uint16_t pwm0 = 0.0f, pwm1 = 0.0f, pwm2 = 0.0f, pwm3 = 0.0f;
+
+    for(;;) {
+
+        //Allow arming sequence to run, ignore mpu data
+        bool _armed;
+        uint8_t _arm_state;
+
+        atomic_read(&g_armed, &_armed, sizeof(bool));
+
+        if(!_armed){
+            atomic_read(&g_arming_state, &_arm_state, sizeof(uint8_t));
+            send_sequence_pwms(_arm_state);
+            sleep(100);
+        }
+
+        //Once armed => start reading sensors and motor control
+        wait(semaphore_mpu_data_ready);
+        uint8_t data = readI2c1Register(QMC5883P_ADDR, QMC5883P_STAT_R);
+
+        //Read MPU
+        MpuData mpu = mpu_read();
+        Vec3f accel = (Vec3f){mpu.a.x, mpu.a.y, mpu.a.z};
+        Vec3f gyro  = (Vec3f){mpu.g.x - g_ofs.x, mpu.g.y - g_ofs.y, -(mpu.g.z - g_ofs.z)};
+        Vec3f mag = {0};
+        accel = correct(accel, accel_A, accel_b);
+        accel = sliding_window(window_a, accel, WINDOW_SIZE, &idx_a);
+        gyro  = sliding_window(window_g, gyro, WINDOW_SIZE, &idx_g);
+
+        //if MAG ready -> read it
+        if(data & QMC5883P_STAT_DRDY) {
+            mag = qmc_read();
+            float t = mag.x;
+            mag.x = mag.y;
+            mag.y = -t;
+            mag = correct(mag, mag_A, mag_b);
+            mag = sliding_window(window_m, mag, WINDOW_SIZE, &idx_m);
+        }
+
+        Vec3f euler = {0};
+        float dt_s = deltaSeconds();
+        dt_marg_s += dt_s;
+        //Run the Full 9DOF MARG AHRS Update
+        if(data & QMC5883P_STAT_DRDY && !(data & QMC5883P_STAT_OVFL)) {
+            setPinValue(BLUE_LED, 1);
+            euler = MARG_AHRS_update(&q_est, &accel, &gyro, &mag, dt_marg_s);
+            dt_marg_s = 0;
+        }
+        //Run the Partial 6DOF IMU AHRS Update
+        else {
+            setPinValue(BLUE_LED, 0);
+            euler = IMU_AHRS_update(&q_est, &accel, &gyro, dt_s);
+            //dt_s 'auto' zeros after function scope ends
+        }
+
+        if(DEBUG_SERIAL_PRINTING){//Debug printing for serial viewing
+            char buffer[100];
+            usprintf(buffer, "%f,%f,%f\n", euler.x, euler.y, euler.z);
+            putsUart0(buffer);
+        }
+
+        Vec3f setpoint = {0};
+        atomic_read(&g_attitude, &setpoint, sizeof(Vec3f));
+        float pitch_correction = pid_update(&pitch_pid, setpoint.x, euler.x, dt_s);
+        float roll_correction = pid_update(&roll_pid, setpoint.y, euler.y, dt_s);
+        float yaw_correction = pid_update(&yaw_pid, setpoint.z, euler.z, dt_s);
+
+        //TODO set throttle from elevation
+        calculate_pwms_from_corrections(&pwm0, &pwm1, &pwm2, &pwm3, pitch_correction, roll_correction, yaw_correction, 0);
+        apply_pwms(pwm0, pwm1, pwm2, pwm3);
+    }//END FOR LOOP
+}//END TASK
+
+
+/* ============================================================================
+ * RC INPUT             (50hz)          (Priority: 2)
+ * ============================================================================
+ *  Description: Receive Controller Input update PID setpoints
+ *
+ *  Control Flow:
+ *      Sleep 200ms (50hz)
+ *      read from nrf
+ *
+ * */
+void task_receive_input(void) {
+    //Variables defined before main loop are inherently 'static'
+    uint8_t channel = 1;
+    uint8_t *addr  = (uint8_t[]){0x11,0x22,0x33,0x44,0x55};
+    NRF_Packet pack = {0};
+    uint8_t _arming_state = ARM_STATE_UNARMED, debounce_count = 0;
+    uint8_t fake_payload_state = ARM_STATE_UNARMED, fake_count = 0;
+
+    nrfSetRxMode(channel, addr);
+
+    for(;;) {
+        sleep(200);
+        lock(mutex_bus_spi);
+        nrfQuickRxMode();
+//        nrfReadRxPayload((uint8_t*)&pack);
+        pack = fake_arming_and_keep(&fake_payload_state, &fake_count);
+
+        //handle arming
+        Vec3f set = {0};
+        arm_seq_update(&_arming_state, &debounce_count, &pack);
+        if (_arming_state == ARM_STATE_ARMED)
+            atomic_write(&g_armed, (bool[]){true}, sizeof(bool));
+        else  {
+            atomic_write(&g_armed, (bool[]){false}, sizeof(bool));
+            atomic_write(&g_attitude, &set, sizeof(Vec3f));
+            atomic_write(&g_arming_state, &_arming_state, sizeof(uint8_t));
+            unlock(mutex_bus_spi);
+            continue;
+        }
+
+        //Convert joystick positions to rotational degree setpoints
+        set.x = getSetpoint(-pack.ry);  //pitch
+        set.y = getSetpoint(pack.rx);   //roll
+        set.z = getSetpoint(pack.lx);   //yaw
+        atomic_write(&g_attitude, &set, sizeof(Vec3f));
+        unlock(mutex_bus_spi);
+    }
+}
+
+
+/* ============================================================================
+ * TELEMETRY            (1hz)           (Priority: 2)
+ * ============================================================================
+ *  Description: Transmit battery health telemetry
+ *
+ * */
+void task_send_telem(void) {
+    //Variables defined before main loop are inherently 'static'
+    uint8_t channel = 1;
+    uint8_t *addr  = (uint8_t[]){0x11,0x22,0x33,0x44,0x55};
+
+    for(;;) {
+        sleep(1000);
+        lock(mutex_bus_spi);
+        nrfSetTxMode(channel, addr);
+
+        unlock(mutex_bus_spi);
+    }
+}
+
+
+/* ============================================================================
+ * IDLE                 (??hz)          (Priority: 7)
+ * ============================================================================
+*  Description: Do nothing task
+*
+*/
+void idle(void) {
+    for(;;) yield();
+}
+
+
+/* ============================================================================
+ * SUB-ROUTINE IMPLEMENTATION
+ * ============================================================================
+*/
 
 void gpioBIsr(void) {
     if(isPinInterrupt(NRF24L01_INT)) {
@@ -133,9 +381,7 @@ void gpioBIsr(void) {
 
 void gpioEIsr(void) {
     if(isPinInterrupt(MPU6050_INT)) {
-        if(armed) _postSemaphore(semaphore_mpu_data_ready);
-
-//        readI2c1Register(MPU6050_ADDR, MPU6050_INT_STATUS_R); //clear int for mpu
+        if(g_armed) _postSemaphore(semaphore_mpu_data_ready);
         clearPinInterrupt(MPU6050_INT);
     }
 }
@@ -458,17 +704,20 @@ void arm_seq_update(uint8_t *arming_state, uint8_t *debounce, const NRF_Packet *
     //Wait for joystick to go to down position for x debounce counts
     case ARM_STATE_UNARMED: {
         // needs to be in down position continuously to advance state
-        if(pack->ly == -127) *debounce++;
+        if(pack->ly == -127) (*debounce)++;
         else *debounce = 0;
 
         //Once reached -> advance state ; else stay
-        if(*debounce == ARMING_DEBOUNCE) {*arming_state = ARM_STATE_ARMING; *debounce = 0; }
+        if(*debounce == ARMING_DEBOUNCE) {
+            *arming_state = ARM_STATE_ARMING;
+            *debounce = 0;
+        }
         else *arming_state = ARM_STATE_UNARMED;
     } break;
     //Wait for joystick to go to above resting position for y debounce counts
     case ARM_STATE_ARMING: {
         // needs to be in up position continuously to advance state
-        if(pack->ly > 0) *debounce++;
+        if(pack->ly > 0) (*debounce)++;
         else *debounce = 0;
 
         //Once reached -> advance state ; else stay
@@ -478,7 +727,7 @@ void arm_seq_update(uint8_t *arming_state, uint8_t *debounce, const NRF_Packet *
     //Wait for joystick to be at rest for z debounce counts
     case ARM_STATE_ARMED: {
         // needs to be in middle(0) position continuously to advance state
-        if(pack->ly == -127) *debounce++;
+        if(pack->ly == -127) (*debounce)++;
         else *debounce = 0;
 
         //Once reached -> advance state ; else stay
@@ -488,7 +737,6 @@ void arm_seq_update(uint8_t *arming_state, uint8_t *debounce, const NRF_Packet *
     default: { *arming_state = ARM_STATE_UNARMED; }
     }
 }
-
 
 #define CORRECTION_GAIN  1.0f
 void calculate_pwms_from_corrections(uint16_t *pwm0, uint16_t *pwm1, uint16_t *pwm2, uint16_t *pwm3,
@@ -538,7 +786,7 @@ void calculate_pwms_from_corrections(uint16_t *pwm0, uint16_t *pwm1, uint16_t *p
     *pwm3 = (uint16_t) clampf(p3, 0, 1023);
 }
 
-void apply_pwms(uint8_t pwm0, uint8_t pwm1, uint8_t pwm2, uint8_t pwm3) {
+void apply_pwms(uint16_t pwm0, uint16_t pwm1, uint16_t pwm2, uint16_t pwm3) {
     //MOTOR_FRONT_LEFT    PC4 M0PWM6 : M0 PWM3 GENA
     //MOTOR_FRONT_RIGHT   PC5 M0PWM7 : M0 PWM3 GENB
     //MOTOR_BACK_LEFT     PD0 M1PWM0 : M0 PWM0 GENA
@@ -549,204 +797,14 @@ void apply_pwms(uint8_t pwm0, uint8_t pwm1, uint8_t pwm2, uint8_t pwm3) {
     PWM1_0_CMPB_R = pwm3;
 }
 
-/* ============================================================================
- *  ESTIMATE ATTITUDE   (1kHz)          (Priority: 0)
- * ============================================================================
- *  Description: This process will read the sensors, update attitude, and run the pid loop for the motors
- *
- *  Control Flow:
- *      Wait on Mpu data ready semaphore (yields to other tasks while waiting), that is posted by interrupt
- *      reads mpu data
- *      polls qmc data ready (no interrupt)
- *      if qmc -> read qmc & marg ahrs
- *      else -> imu_ahrs
- *      pid update (with updated attitude and current setpoint)
- *      send motor control
- *
- *  Notes:
- *      no sleeping as the wait on data will provide the other tasks with time to run
- *      the mpu thus governs the speed in which this task runs (mpu6050 set at 1khz datarate)
- * */
-
-#define GYRO_MSE    0.1
-#define PI          3.141592
-#define RAD2DEG     180.0/PI
-#define WINDOW_SIZE 4
-void task_ahrs_pid(void) {
-    //Variables defined before main loop are inherently 'static'
-    float mag_A[3][3]   =  {{0.00861610, 0.00195565, 0.00083649},
-                           {0.00195565, 10.99483483, -0.22468925},
-                           {0.00083649, -0.22468925, 10.5611354}};
-    float mag_b [3]     =  {178.46403898, -0.03880254, -0.03374748};
-    float accel_A[3][3] =  {{1.00550042, -0.00211106, -0.00102880},
-                           {-0.00211106, 1.00552839, 0.00102497},
-                           {-0.00102880, 0.00102497, 0.98906820}};
-    float accel_b[3]    =  {0.02526037, 0.00277766, 0.01647459};
-    Vec3f g_ofs = gyroOffsets();
-    Vec3f window_a[WINDOW_SIZE] = {0};
-    Vec3f window_g[WINDOW_SIZE] = {0};
-    Vec3f window_m[WINDOW_SIZE] = {0};
-    uint8_t idx_a = 0, idx_g = 0, idx_m = 0;
-    float dt_marg_s = 0.0f;
-    Quaternion q_est = {1.0f, 0.0f, 0.0f, 0.0f};
-    PidController pitch_pid = {
-                               .kp=.5, .ki=.5, .kd=.5,
-                               .integral=0, .prev_diff=0,
-                               .min=-20, .max=20
-    };
-    PidController roll_pid  = {
-                               .kp=.5, .ki=.5, .kd=.5,
-                               .integral=0, .prev_diff=0,
-                               .min=-20, .max=20
-    };
-    PidController yaw_pid   = {
-                               .kp=.5, .ki=.5, .kd=.5,
-                               .integral=0, .prev_diff=0,
-                               .min=-20, .max=20
-    };
-    uint16_t pwm0 = 0.0f, pwm1 = 0.0f, pwm2 = 0.0f, pwm3 = 0.0f;
-
-    for(;;) {
-        wait(semaphore_mpu_data_ready);
-        uint8_t data = readI2c1Register(QMC5883P_ADDR, QMC5883P_STAT_R);
-
-        //Read MPU
-        MpuData mpu = mpu_read();
-        Vec3f accel = (Vec3f){mpu.a.x, mpu.a.y, mpu.a.z};
-        Vec3f gyro  = (Vec3f){mpu.g.x - g_ofs.x, mpu.g.y - g_ofs.y, -(mpu.g.z - g_ofs.z)};
-        Vec3f mag = {0};
-        accel = correct(accel, accel_A, accel_b);
-        accel = sliding_window(window_a, accel, WINDOW_SIZE, &idx_a);
-        gyro  = sliding_window(window_g, gyro, WINDOW_SIZE, &idx_g);
-
-        //if MAG ready -> read it
-        if(data & QMC5883P_STAT_DRDY) {
-            mag = qmc_read();
-            float t = mag.x;
-            mag.x = mag.y;
-            mag.y = -t;
-            mag = correct(mag, mag_A, mag_b);
-            mag = sliding_window(window_m, mag, WINDOW_SIZE, &idx_m);
-        }
-
-        Vec3f euler = {0};
-        float dt_s = deltaSeconds();
-        dt_marg_s += dt_s;
-        //Run the Full 9DOF MARG AHRS Update
-        if(data & QMC5883P_STAT_DRDY && !(data & QMC5883P_STAT_OVFL)) {
-            setPinValue(BLUE_LED, 1);
-            euler = MARG_AHRS_update(&q_est, &accel, &gyro, &mag, dt_marg_s);
-            dt_marg_s = 0;
-        }
-        //Run the Partial 6DOF IMU AHRS Update
-        else {
-            setPinValue(BLUE_LED, 0);
-            euler = IMU_AHRS_update(&q_est, &accel, &gyro, dt_s);
-            //dt_s 'auto' zeros after function scope ends
-        }
-
-        if(DEBUG_SERIAL_PRINTING){//Debug printing for serial viewing
-            char buffer[100];
-            usprintf(buffer, "%f,%f,%f\n", euler.x, euler.y, euler.z);
-            putsUart0(buffer);
-        }
-
-        Vec3f setpoint = {0};
-        atomic_read(&attitude, &setpoint, sizeof(Vec3f));
-        float pitch_correction = pid_update(&pitch_pid, setpoint.x, euler.x, dt_s);
-        float roll_correction = pid_update(&roll_pid, setpoint.y, euler.y, dt_s);
-        float yaw_correction = pid_update(&yaw_pid, setpoint.z, euler.z, dt_s);
-
-        bool _armed;
-        atomic_read(&armed, &_armed, sizeof(bool));
-        if(!_armed) pwm0 = pwm1 = pwm2 = pwm3 = 0;
-        else calculate_pwms_from_corrections(&pwm0, &pwm1, &pwm2, &pwm3, pitch_correction, roll_correction, yaw_correction, 0);
-        apply_pwms(pwm0, pwm1, pwm2, pwm3);
-    }//END FOR LOOP
-}//END TASK
-
-
-/* ============================================================================
- * RC INPUT             (50hz)          (Priority: 2)
- * ============================================================================
- *  Description: Receive Controller Input update PID setpoints
- *
- *  Control Flow:
- *      Sleep 200ms (50hz)
- *      read from nrf
- *
- * */
-void task_receive_input(void) {
-    //Variables defined before main loop are inherently 'static'
-    uint8_t channel = 1;
-    uint8_t *addr  = (uint8_t[]){0x11,0x22,0x33,0x44,0x55};
-    NRF_Packet pack = {0};
-    uint8_t arming_state = ARM_STATE_UNARMED, debounce_count = 0;
-
-    nrfSetRxMode(channel, addr);
-
-
-    uint8_t fake_payload_state = ARM_STATE_UNARMED, fake_count = 0;
-
-    for(;;) {
-        sleep(200);
-        lock(mutex_bus_spi);
-        nrfQuickRxMode();
-//        nrfReadRxPayload((uint8_t*)&pack);
-        pack = fake_arming_and_keep(&fake_payload_state, &fake_count);
-
-        //handle arming
-        Vec3f set = {0};
-        arm_seq_update(&arming_state, &debounce_count, &pack);
-        if (arming_state == ARM_STATE_ARMED)
-            atomic_write(&armed, (bool[]){true}, sizeof(bool));
-        else  {
-            atomic_write(&armed, (bool[]){false}, sizeof(bool));
-            atomic_write(&attitude, &set, sizeof(Vec3f));
-            unlock(mutex_bus_spi);
-            continue;
-        }
-
-        //Convert joystick positions to rotational degree setpoints
-        set.x = getSetpoint(-pack.ry);  //pitch
-        set.y = getSetpoint(pack.rx);   //roll
-        set.z = getSetpoint(pack.lx);   //yaw
-        atomic_write(&attitude, &set, sizeof(Vec3f));
-        unlock(mutex_bus_spi);
+void send_sequence_pwms(uint8_t state) {
+    switch(state) {
+    case ARM_STATE_UNARMED: { apply_pwms(0, 0, 0, 0); } break;
+    case ARM_STATE_ARMING:  { apply_pwms(600, 600, 600, 600); } break;
+    case ARM_STATE_ARMED:   { apply_pwms(300, 300, 300, 300); } break;
     }
 }
 
-
-/* ============================================================================
- * TELEMETRY            (1hz)           (Priority: 2)
- * ============================================================================
- *  Description: Transmit battery health telemetry
- *
- * */
-void task_send_telem(void) {
-    //Variables defined before main loop are inherently 'static'
-    uint8_t channel = 1;
-    uint8_t *addr  = (uint8_t[]){0x11,0x22,0x33,0x44,0x55};
-
-    for(;;) {
-        sleep(1000);
-        lock(mutex_bus_spi);
-        nrfSetTxMode(channel, addr);
-
-        unlock(mutex_bus_spi);
-    }
-}
-
-
-/* ============================================================================
- * IDLE                 (??hz)          (Priority: 7)
- * ============================================================================
-*  Description: Do nothing task
-*
-*/
-void idle(void) {
-    for(;;) yield();
-}
 
 
 //============================================================================

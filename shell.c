@@ -72,10 +72,10 @@ void strncpy(char* to, const char* from, uint8_t n)
     to[c] = '\0';
 }
 
-void bytecpy(void* dst, void* src, uint32_t size) {
+void bytecpy(void* dst, const void* src, uint32_t size) {
     uint32_t b = 0;
     for(; b < size; b++)
-        ((uint8_t*)src)[b] = ((uint8_t*)dst)[b];
+        ((uint8_t*)dst)[b] = ((uint8_t*)src)[b];
 }
 
 void strcpyFill(char* to, const char* from, uint8_t len, char letter)
