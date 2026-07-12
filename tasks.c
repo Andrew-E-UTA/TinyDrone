@@ -398,8 +398,22 @@ void initTaskHw(void) {
 
     //GPIO (mpu, qmc, nrf interrupts)
     enablePort(PORTA);
+    enablePort(PORTC);
+    enablePort(PORTD);
     enablePort(PORTE);
     enablePort(PORTF);
+
+    //enable pins
+    selectPinPushPullOutput(MOTOR_FRONT_LEFT);
+    selectPinPushPullOutput(MOTOR_FRONT_RIGHT);
+    selectPinPushPullOutput(MOTOR_BACK_LEFT);
+    selectPinPushPullOutput(MOTOR_BACK_RIGHT);
+
+    //set to use pwm
+    setPinAuxFunction(MOTOR_FRONT_LEFT, GPIO_PCTL_PC4_M0PWM6);
+    setPinAuxFunction(MOTOR_FRONT_RIGHT, GPIO_PCTL_PC5_M0PWM7);
+    setPinAuxFunction(MOTOR_BACK_LEFT, GPIO_PCTL_PD0_M1PWM0);
+    setPinAuxFunction(MOTOR_BACK_RIGHT, GPIO_PCTL_PD1_M1PWM1);
 
     selectPinPushPullOutput(BLUE_LED);
     selectPinPushPullOutput(RED_LED);
@@ -459,18 +473,23 @@ void initTaskHw(void) {
     PWM0_3_LOAD_R = 1023;
     PWM1_0_LOAD_R = 1023;
 
-    PWM0_3_CMPA_R = 0;
-    PWM0_3_CMPB_R = 0;
-    PWM1_0_CMPA_R = 0;
-    PWM1_0_CMPB_R = 0;
+    PWM0_3_CMPA_R = 512;
+    PWM0_3_CMPB_R = 512;
+    PWM1_0_CMPA_R = 512;
+    PWM1_0_CMPB_R = 512;
 
     //Turn on Generators
     PWM0_3_CTL_R = PWM_0_CTL_ENABLE;
     PWM1_0_CTL_R = PWM_1_CTL_ENABLE;
 
+    PWM0_SYNC_R = PWM_SYNC_SYNC3;
+    PWM1_SYNC_R = PWM_SYNC_SYNC0;
+
     //Enable Outputs
     PWM0_ENABLE_R |= PWM_ENABLE_PWM3EN;
     PWM1_ENABLE_R |= PWM_ENABLE_PWM0EN;
+
+    for(;;);
 
     //MODULES
     mpu_init();
