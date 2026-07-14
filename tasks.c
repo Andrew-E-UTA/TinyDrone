@@ -60,7 +60,7 @@
 #include "qmc5883p.h"
 #include "bme280.h"
 
-#define DEBUG_SERIAL_PRINTING 0
+#define DEBUG_SERIAL_PRINTING 1
 
 #define NRF24L01_CE     PORTA,2
 #define NRF24L01_CSN    PORTA,3
@@ -115,7 +115,7 @@ typedef struct {
 
 #define MAX_NRF_PACKET_SIZE 32
 typedef struct {
-    int8_t rx, ry, lx, ly;
+    int8_t ry, rx, ly, lx;
     uint8_t flags;
     uint8_t reserved[MAX_NRF_PACKET_SIZE - 5] ; //always 0
 } NRF_Packet;
@@ -124,10 +124,8 @@ typedef struct {
 //-----------------------------------------------------------------------------
 // Globals
 //-----------------------------------------------------------------------------
-
-Vec3f g_attitude = {.x=0, .y=0, .z=0};
+NRF_Packet g_packet = {};
 bool g_armed = false;
-uint8_t g_arming_state = ARM_STATE_UNARMED;
 
 //-----------------------------------------------------------------------------
 // (Private) Sub-Routine Prototypes
@@ -145,14 +143,12 @@ Vec3f sliding_window(Vec3f window[], Vec3f new_data, uint8_t size, uint8_t *wind
 Vec3f MARG_AHRS_update(Quaternion *q_est, const Vec3f *a, const Vec3f *g, const Vec3f *m, float dt_s);
 Vec3f IMU_AHRS_update(Quaternion *q_est, const Vec3f *a, const Vec3f *g, float dt_s);
 float pid_update(PidController *pid, float setpoint, float current, float dt);
-float getSetpoint(int8_t joystick);
-NRF_Packet fake_arming_and_keep(uint8_t *state, uint8_t *count);
+int16_t joystick_2_pwm(uint8_t input);
 void arm_seq_update(uint8_t *arming_state, uint8_t *debounce, const NRF_Packet *pack);
 void calculate_pwms_from_corrections(uint16_t *pwm0, uint16_t *pwm1, uint16_t *pwm2, uint16_t *pwm3, float pitch_correction, float roll_correction, float yaw_correction, float throttle);
 void apply_pwms(uint16_t pwm0, uint16_t pwm1, uint16_t pwm2, uint16_t pwm3);
 void send_sequence_pwms(uint8_t state);
 void MadgwickQuaternionUpdate(float q[4], float ax, float ay, float az, float gx, float gy, float gz, float mx, float my, float mz, float deltat);
-
 
 //-----------------------------------------------------------------------------
 // Tasks
@@ -211,19 +207,37 @@ void task_ahrs_pid(void) {
                                .integral=0, .prev_diff=0,
                                .min=-20, .max=20
     };
+//    PidController throttle_pid   = {
+//                                     .kp=.5, .ki=.5, .kd=.5,
+//                                     .integral=0, .prev_diff=0,
+//                                     .min=-20, .max=20
+//      };
     uint16_t pwm0 = 0.0f, pwm1 = 0.0f, pwm2 = 0.0f, pwm3 = 0.0f;
 
     for(;;) {
         //Allow arming sequence to run, ignore mpu data
         bool _armed;
-        uint8_t _arm_state;
+        NRF_Packet packet;
 
+        atomic_read(&g_packet, &packet, sizeof(NRF_Packet));
         atomic_read(&g_armed, &_armed, sizeof(bool));
 
         if(!_armed){
-            atomic_read(&g_arming_state, &_arm_state, sizeof(uint8_t));
-            send_sequence_pwms(_arm_state);
+            //convert joystick range to raw pwm cmp values
+            pwm0 = joystick_2_pwm(packet.lx);
+            apply_pwms(pwm0, pwm0, pwm0, pwm0); //Fake throttle input (all motors inc/dec at same time)
+
+            if(1){//Debug printing for serial viewing
+                char buffer[100];
+                putsUart0(SAVE_POS);
+                usprintf(buffer, "pckt: %d, %d, %d, %d\t\t\n", packet.lx, packet.ly, packet.rx, packet.ry);
+                putsUart0(buffer);
+                usprintf(buffer, "pwms: %d, %d, %d, %d\t\t\n", pwm0, pwm1, pwm2, pwm3);
+                putsUart0(buffer);
+                putsUart0(RETURN_2_POS);
+            }
             sleep(100);
+            continue;
         }
 
         //Once armed => start reading sensors and motor control
@@ -265,21 +279,21 @@ void task_ahrs_pid(void) {
             //dt_s 'auto' zeros after function scope ends
         }
 
-        if(DEBUG_SERIAL_PRINTING){//Debug printing for serial viewing
-            char buffer[100];
-            usprintf(buffer, "%f,%f,%f\n", euler.x, euler.y, euler.z);
-            putsUart0(buffer);
-        }
+        //Convert raw joystick input [-128]
+        float pitch_set     = ((float)-packet.ry) / 255.0f;
+        float roll_set      = ((float)packet.rx) / 255.0f;
+        float yaw_set       = ((float)packet.lx) / 255.0f;
+        float throttle_set  = 0;
 
-        Vec3f setpoint = {0};
-        atomic_read(&g_attitude, &setpoint, sizeof(Vec3f));
-        float pitch_correction = pid_update(&pitch_pid, setpoint.x, euler.x, dt_s);
-        float roll_correction = pid_update(&roll_pid, setpoint.y, euler.y, dt_s);
-        float yaw_correction = pid_update(&yaw_pid, setpoint.z, euler.z, dt_s);
+        float pitch_correct = pid_update(&pitch_pid, pitch_set, euler.x, dt_s);
+        float roll_correct = pid_update(&roll_pid, roll_set, euler.y, dt_s);
+        float yaw_correct = pid_update(&yaw_pid, yaw_set, euler.z, dt_s);
 
-        //TODO set throttle from elevation
-        calculate_pwms_from_corrections(&pwm0, &pwm1, &pwm2, &pwm3, pitch_correction, roll_correction, yaw_correction, 0);
+        //Mixes correction + throttle into pwm signals
+        calculate_pwms_from_corrections(&pwm0, &pwm1, &pwm2, &pwm3, pitch_correct, roll_correct, yaw_correct, throttle_set);
         apply_pwms(pwm0, pwm1, pwm2, pwm3);
+
+
     }//END FOR LOOP
 }//END TASK
 
@@ -300,46 +314,32 @@ void task_receive_input(void) {
     uint8_t *addr  = (uint8_t[]){0x11,0x22,0x33,0x44,0x55};
     NRF_Packet pack = {0};
     uint8_t _arming_state = ARM_STATE_UNARMED, debounce_count = 0;
-//    uint8_t fake_payload_state = ARM_STATE_UNARMED, fake_count = 0;
 
     nrfSetRxMode(channel, addr);
-    uint8_t ch = nrfReadReg(RF_CH);
-    ch = nrfReadReg(0xA);
-    ch = nrfReadReg(0xB);
-    ch = nrfReadReg(0xC);
-    ch = nrfReadReg(0xD);
-    ch = nrfReadReg(0xE);
 
     for(;;) {
         sleep(200);
         lock(mutex_bus_spi);
         nrfQuickRxMode();
         nrfReadRxPayload((uint8_t*)&pack);
-        char buffer[50];
-        usprintf(buffer, "Pckt: %d, %d, %d, %d\n", pack.rx, pack.ry, pack.lx , pack.ly);
-        putsUart0(SAVE_POS);
-        putsUart0(buffer);
-        putsUart0(RETURN_2_POS);
-//        pack = fake_arming_and_keep(&fake_payload_state, &fake_count);
 
         //handle arming
-        Vec3f set = {0};
         arm_seq_update(&_arming_state, &debounce_count, &pack);
         if (_arming_state == ARM_STATE_ARMED)
             atomic_write(&g_armed, (bool[]){true}, sizeof(bool));
-        else  {
+        else
             atomic_write(&g_armed, (bool[]){false}, sizeof(bool));
-            atomic_write(&g_attitude, &set, sizeof(Vec3f));
-            atomic_write(&g_arming_state, &_arming_state, sizeof(uint8_t));
-            unlock(mutex_bus_spi);
-            continue;
+
+        atomic_write(&g_packet, &pack, sizeof(NRF_Packet));
+
+        if(0){//Debug printing for serial viewing
+            char buffer[100];
+            putsUart0(SAVE_POS);
+            usprintf(buffer, "pckt: %d, %d, %d, %d\t\t\n", pack.lx, pack.ly, pack.rx, pack.ry);
+            putsUart0(buffer);
+            putsUart0(RETURN_2_POS);
         }
 
-        //Convert joystick positions to rotational degree setpoints
-        set.x = getSetpoint(-pack.ry);  //pitch
-        set.y = getSetpoint(pack.rx);   //roll
-        set.z = getSetpoint(pack.lx);   //yaw
-        atomic_write(&g_attitude, &set, sizeof(Vec3f));
         unlock(mutex_bus_spi);
     }
 }
@@ -700,33 +700,15 @@ float pid_update(PidController *pid, float setpoint, float current, float dt) {
     return clampf(p + i + d, pid->min, pid->max);
 }
 
-float getSetpoint(int8_t joystick) {
-    return (((float)joystick + 127.0) * 12.0 + 8.0) / 17.0 - 90.0;
-}
-
-NRF_Packet fake_arming_and_keep(uint8_t *state, uint8_t *count) {
-    NRF_Packet pkt = {0};
-
-    switch (*state) {
-    case ARM_STATE_UNARMED: {
-        pkt.ly = -127;
-        (*count)++;
-        if (*count >= ARMING_DEBOUNCE) { *state = ARM_STATE_ARMING; *count = 0; }
-    } break;
-    case ARM_STATE_ARMING: {
-        pkt.ly = 10;
-        (*count)++;
-        if (*count >= ARMED_DEBOUNCE) { *state = ARM_STATE_ARMED; *count = 0; }
-    } break;
-    case ARM_STATE_ARMED: {
-        pkt.ly = 0;
-    } break;
-    }
-    return pkt;
+int16_t joystick_2_pwm(uint8_t input) {
+    float pre = ((float)input) / 255 * 1023;
+    return (int16_t) clampf(pre, 0, 1023);
 }
 
 void arm_seq_update(uint8_t *arming_state, uint8_t *debounce, const NRF_Packet *pack) {
     switch(*arming_state) {
+
+
     //Wait for joystick to go to down position for x debounce counts
     case ARM_STATE_UNARMED: {
         // needs to be in down position continuously to advance state
@@ -740,6 +722,8 @@ void arm_seq_update(uint8_t *arming_state, uint8_t *debounce, const NRF_Packet *
         }
         else *arming_state = ARM_STATE_UNARMED;
     } break;
+
+
     //Wait for joystick to go to above resting position for y debounce counts
     case ARM_STATE_ARMING: {
         // needs to be in up position continuously to advance state
@@ -750,6 +734,8 @@ void arm_seq_update(uint8_t *arming_state, uint8_t *debounce, const NRF_Packet *
         if(*debounce == ARMED_DEBOUNCE) {*arming_state = ARM_STATE_ARMED; *debounce = 0; }
         else *arming_state = ARM_STATE_ARMING;
     } break;
+
+
     //Wait for joystick to be at rest for z debounce counts
     case ARM_STATE_ARMED: {
         // needs to be in middle(0) position continuously to advance state
@@ -822,15 +808,6 @@ void apply_pwms(uint16_t pwm0, uint16_t pwm1, uint16_t pwm2, uint16_t pwm3) {
     PWM1_0_CMPA_R = pwm2;
     PWM1_0_CMPB_R = pwm3;
 }
-
-void send_sequence_pwms(uint8_t state) {
-    switch(state) {
-    case ARM_STATE_UNARMED: { apply_pwms(0, 0, 0, 0); } break;
-    case ARM_STATE_ARMING:  { apply_pwms(600, 600, 600, 600); } break;
-    case ARM_STATE_ARMED:   { apply_pwms(300, 300, 300, 300); } break;
-    }
-}
-
 
 
 //============================================================================
