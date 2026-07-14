@@ -224,7 +224,7 @@ void task_ahrs_pid(void) {
 
         if(!_armed){
             //convert joystick range to raw pwm cmp values
-            pwm0 = joystick_2_pwm(packet.lx);
+            pwm0 = joystick_2_pwm(packet.ly);
             apply_pwms(pwm0, pwm0, pwm0, pwm0); //Fake throttle input (all motors inc/dec at same time)
 
             if(1){//Debug printing for serial viewing
